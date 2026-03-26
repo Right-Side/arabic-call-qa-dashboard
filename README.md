@@ -1,7 +1,7 @@
-# 📞 Arabic Call QA Dashboard
+# 📞 Automated Call QA Dashboard
 
 > **AI-powered Quality Assurance for Arabic Call Centres**
-> Powered by Google Gemini 1.5 Pro · Built with Streamlit
+> Powered by HYDA AQM
 
 ---
 
