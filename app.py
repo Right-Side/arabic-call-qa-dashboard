@@ -1,7 +1,7 @@
 """
 =============================================================
-Arabic Call Quality Assurance Dashboard
-Powered by Google Gemini 2.0 Flash / 1.5 Pro
+Automated Call Quality Assurance Dashboard
+Powered by HYDA AQM
 =============================================================
 """
 
@@ -202,21 +202,45 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
 
 
 def call_gemini(client: genai.Client, audio_file, system_prompt: str) -> dict:
-    """Send uploaded audio + system prompt to Gemini and return parsed JSON."""
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[
-            types.Part.from_uri(uri=audio_file.uri, mime_type=audio_file.mime_type),
-            "Analyse this Arabic call recording according to your system instructions. "
-            "Return ONLY the JSON object.",
-        ],
-        config=types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
-    )
-    return json.loads(clean_json(response.text))
+    """Send uploaded audio + system prompt to Gemini and return parsed JSON.
+
+    Tries models in order of preference; falls back if a model isn't available
+    on the caller's API key.
+    """
+    # Models tried in order — flash-2 is fastest, 1.5-flash/pro as fallbacks
+    _MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+
+    last_exc = None
+    for model_name in _MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                # Pass the file object directly — most reliable way with google-genai SDK
+                contents=[
+                    audio_file,
+                    "Analyse this Arabic call recording according to your system instructions. "
+                    "Return ONLY the JSON object.",
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
+            )
+            return json.loads(clean_json(response.text))
+
+        except Exception as exc:
+            last_exc = exc
+            err_str = str(exc).lower()
+            # If this model isn't available on the API key, try the next one
+            if any(k in err_str for k in ("not found", "not supported", "404",
+                                           "model", "unavailable", "permission")):
+                continue
+            # Any other error (quota, network, JSON parse) — raise immediately
+            raise
+
+    # All models failed — raise the last error
+    raise last_exc
 
 
 def generate_text_report(data: dict, department: str, dialect: str, filename: str) -> str:
@@ -382,7 +406,7 @@ if uploaded_file:
 
     _, col_btn, _ = st.columns([1, 2, 1])
     with col_btn:
-        process_btn = st.button("🔍  Analyse Call with Gemini",
+        process_btn = st.button("🔍  Analyse Call with HYDA AQM",
                                 type="primary", use_container_width=True)
 
     if process_btn:
@@ -409,7 +433,7 @@ if uploaded_file:
                 _error_detail = e
 
             if _error_msg is None:
-                st.write("🧠 Analysing call with Gemini 2.0 Flash…")
+                st.write("🧠 Analysing call with Gemini (trying best available model)…")
                 system_prompt = build_system_prompt(department, dialect, kpis)
                 try:
                     data = call_gemini(client, audio_file, system_prompt)
@@ -419,7 +443,13 @@ if uploaded_file:
                     _error_detail = e
                 except Exception as e:
                     status.update(label="❌ Analysis failed", state="error")
-                    _error_msg = f"Gemini API error: {str(e)}"
+                    _error_msg = (
+                        f"Gemini API error: {str(e)}\n\n"
+                        "💡 Common fixes:\n"
+                        "• Make sure your API key is valid (get one at aistudio.google.com)\n"
+                        "• Check you haven't exceeded the free-tier quota\n"
+                        "• Try a different audio file format (WAV or MP3 work best)"
+                    )
                     _error_detail = e
 
             if _error_msg is None:
