@@ -1,6 +1,6 @@
 """
 =============================================================
-Automated Call Quality Assurance Dashboard
+AAutomated Call Quality Assurance Dashboard
 Powered by HYDA AQM
 =============================================================
 """
@@ -207,10 +207,24 @@ def call_gemini(client: genai.Client, audio_file, system_prompt: str) -> dict:
     Tries models in order of preference; falls back if a model isn't available
     on the caller's API key.
     """
-    # Models tried in order — flash-2 is fastest, 1.5-flash/pro as fallbacks
-    _MODELS = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    # Models tried in order — try both un-versioned and versioned names
+    # because some API keys only respond to one form
+    _MODELS = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-001",
+        "gemini-1.5-pro-latest",
+    ]
 
     last_exc = None
+    tried_models: list[str] = []
+
     for model_name in _MODELS:
         try:
             response = client.models.generate_content(
@@ -231,16 +245,24 @@ def call_gemini(client: genai.Client, audio_file, system_prompt: str) -> dict:
 
         except Exception as exc:
             last_exc = exc
+            tried_models.append(model_name)
             err_str = str(exc).lower()
-            # If this model isn't available on the API key, try the next one
-            if any(k in err_str for k in ("not found", "not supported", "404",
-                                           "model", "unavailable", "permission")):
+            # 404 / not-found → model not available on this key, try next
+            if any(k in err_str for k in ("not found", "404", "not supported",
+                                           "unavailable")):
                 continue
-            # Any other error (quota, network, JSON parse) — raise immediately
-            raise
+            # Any other error (quota, auth, JSON parse) — raise immediately with context
+            raise RuntimeError(
+                f"Model '{model_name}' failed: {exc}"
+            ) from exc
 
-    # All models failed — raise the last error
-    raise last_exc
+    # All models tried and all returned 404-style errors
+    raise RuntimeError(
+        f"None of the Gemini models responded successfully.\n"
+        f"Tried: {tried_models}\n\n"
+        f"Last error: {last_exc}\n\n"
+        "👉 Click 'Test API Connection' in the sidebar to see which models your API key can access."
+    ) from last_exc
 
 
 def generate_text_report(data: dict, department: str, dialect: str, filename: str) -> str:
@@ -377,7 +399,33 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption("v1.0.0 · Gemini 2.0 Flash · Arabic QA")
+
+    # ── API Connection Test ───────────────────────────────
+    if api_key:
+        if st.button("🔍 Test API Connection", use_container_width=True,
+                     help="Lists the Gemini models available on your API key"):
+            with st.spinner("Checking…"):
+                try:
+                    _tc = genai.Client(api_key=api_key)
+                    _all = list(_tc.models.list())
+                    _gem = [m.name for m in _all
+                            if "gemini" in m.name.lower()
+                            and "generateContent" in (getattr(m, "supported_actions", [])
+                                                       or getattr(m, "supported_generation_methods", []))]
+                    if _gem:
+                        st.success(f"✅ Valid key! {len(_gem)} Gemini models available.")
+                        with st.expander("📋 Available models"):
+                            for _m in _gem:
+                                st.code(_m)
+                    else:
+                        _all_names = [m.name for m in _all if "gemini" in m.name.lower()]
+                        st.warning(f"⚠️ Key valid but no generateContent-capable Gemini models found. "
+                                   f"All Gemini entries: {_all_names}")
+                except Exception as _e:
+                    st.error(f"❌ {str(_e)}")
+
+    st.divider()
+    st.caption("v1.0.1 · Gemini API · Arabic QA")
 
 
 # ─────────────────────────────────────────────
