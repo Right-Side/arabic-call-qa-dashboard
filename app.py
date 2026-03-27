@@ -8,6 +8,7 @@ import streamlit as st
 from google import genai
 from google.genai import types
 import json, time, os, tempfile, hashlib, pathlib
+from json_repair import repair_json
 import pandas as pd
 from datetime import datetime
 
@@ -345,7 +346,17 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
                     response_mime_type="application/json",
                 ),
             )
-            return json.loads(clean_json(response.text))
+            cleaned = clean_json(response.text)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                # Model returned malformed JSON — try automatic repair
+                repaired = repair_json(cleaned, return_objects=True)
+                if isinstance(repaired, dict) and repaired:
+                    return repaired
+                # Repair couldn't produce a valid dict, skip to next model
+                skipped.append(model_name)
+                continue
         except Exception as exc:
             last_exc = exc
             err_str = str(exc).lower()
