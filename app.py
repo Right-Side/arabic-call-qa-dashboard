@@ -222,18 +222,37 @@ def upload_audio(client: genai.Client, file_bytes: bytes, suffix: str):
 
 
 def build_system_prompt(department: str, dialect: str, kpis: str) -> str:
+    meta         = lang_meta(dialect)
+    lang_instr   = meta["instruction"]
+    native_name  = meta["native"]
+    is_arabic    = meta["rtl"] and "Arabic" in dialect
+    is_urdu      = dialect == "Urdu – اردو"
+    is_english   = dialect == "English"
+
+    # Code-switching note adapts per language family
+    if is_arabic:
+        codesw = "Handle Arabic-English code-switching naturally (agents frequently mix Arabic with English technical terms)."
+    elif is_english:
+        codesw = "The call is in English. Evaluate clarity, professionalism, and communication quality."
+    else:
+        codesw = f"Handle natural code-switching between {lang_instr} and English — this is common in Indian call centres."
+
+    # The "_ar" suffix fields are kept for JSON schema stability; content must be in the target language
+    native_placeholder = f"[Write this in {lang_instr}]"
+
     return f"""You are an expert Quality Assurance Auditor specialising in call centres.
-Your analysis must be precise, culturally aware, and sensitive to Arabic communication norms.
+Your analysis must be precise, culturally aware, and sensitive to local communication norms.
 
 DEPARTMENT: {department}
-DIALECT: {dialect}
+LANGUAGE / DIALECT: {lang_instr}
 
 ANALYSIS GUIDELINES:
-- Handle Arabic-English code-switching naturally (agents frequently mix Arabic with English technical terms).
+- {codesw}
 - Distinguish clearly between agent behaviour and customer behaviour.
 - Evaluate both verbal content and tonal/emotional delivery.
 - Be concise yet specific; cite moments or exact phrases as evidence where possible.
-- All reasoning/description fields MUST be written in Arabic (العربية).
+- All fields labelled _ar (overview_ar, description_ar, reasoning_ar, tip_ar) MUST be written in {lang_instr}. Do NOT use Arabic for these fields unless the dialect is Arabic or Urdu.
+- The field overview_en must always be in English regardless of language.
 
 KPIs TO EVALUATE:
 {kpis}
@@ -241,7 +260,7 @@ KPIs TO EVALUATE:
 RESPOND ONLY with a single valid JSON object — no markdown fences, no explanatory text:
 {{
     "call_summary": {{
-        "overview_ar": "ملخص عربي للمكالمة (2-3 جمل)",
+        "overview_ar": "{native_placeholder} — summary of the call (2-3 sentences)",
         "overview_en": "English summary of the call (2-3 sentences)",
         "duration_estimate": "estimated duration e.g. ~4 mins",
         "call_type": "Complaint | Inquiry | Sales | Technical | Collections | Other",
@@ -252,16 +271,16 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
         "agent_sentiment": {{
             "score": <integer 1-10>,
             "label": "Positive | Neutral | Negative",
-            "description_ar": "وصف مفصّل بالعربية"
+            "description_ar": "{native_placeholder} — detailed agent sentiment description"
         }},
         "customer_sentiment": {{
             "score": <integer 1-10>,
             "label": "Positive | Neutral | Negative",
-            "description_ar": "وصف مفصّل بالعربية"
+            "description_ar": "{native_placeholder} — detailed customer sentiment description"
         }},
         "sentiment_trend": "Improving | Declining | Stable",
         "key_moments": [
-            {{"timestamp": "~01:30", "event": "brief description"}}
+            {{"timestamp": "~01:30", "event": "brief description in English"}}
         ]
     }},
     "kpi_scorecard": [
@@ -269,7 +288,7 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
             "kpi_name": "KPI short name",
             "status": "Pass | Fail | N/A",
             "score": <null or integer 1-10>,
-            "reasoning_ar": "تفاصيل التقييم بالعربية",
+            "reasoning_ar": "{native_placeholder} — detailed KPI evaluation",
             "evidence": "quoted moment or phrase from the call"
         }}
     ],
@@ -277,7 +296,7 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
         {{
             "priority": "High | Medium | Low",
             "area": "e.g. Empathy, Compliance, Communication",
-            "tip_ar": "نصيحة تدريبية بالعربية",
+            "tip_ar": "{native_placeholder} — coaching tip",
             "tip_en": "Coaching tip in English"
         }}
     ],
@@ -285,7 +304,7 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
         {{
             "flag": "short flag title",
             "severity": "Critical | Warning | Info",
-            "description_ar": "وصف المشكلة بالعربية"
+            "description_ar": "{native_placeholder} — description of the compliance issue"
         }}
     ]
 }}"""
@@ -386,6 +405,123 @@ DEPT_KPIS = {
         "7. Rate technical competency (1-10)"
     ),
 }
+
+
+# ─────────────────────────────────────────────────────────
+# LANGUAGE CONFIGURATION
+# All supported languages/dialects with metadata
+# ─────────────────────────────────────────────────────────
+
+LANGUAGE_OPTIONS = [
+    # ── Arabic dialects ──────────────────────────────────
+    "Arabic – Modern Standard (MSA)",
+    "Arabic – Egyptian",
+    "Arabic – Gulf",
+    "Arabic – Levantine",
+    "Arabic – Maghrebi",
+    # ── English ──────────────────────────────────────────
+    "English",
+    # ── Hindi & Hinglish ─────────────────────────────────
+    "Hindi – हिंदी",
+    "Hinglish – Hindi-English Mix",
+    # ── South Indian languages ────────────────────────────
+    "Tamil – தமிழ்",
+    "Telugu – తెలుగు",
+    "Kannada – ಕನ್ನಡ",
+    "Malayalam – മലയാളം",
+    # ── West & Central Indian languages ──────────────────
+    "Marathi – मराठी",
+    "Gujarati – ગુજરાતી",
+    # ── East Indian languages ─────────────────────────────
+    "Bengali – বাংলা",
+    "Odia – ଓଡ଼ିଆ",
+    "Assamese – অসমীয়া",
+    # ── North Indian languages ────────────────────────────
+    "Punjabi – ਪੰਜਾਬੀ",
+    "Urdu – اردو",
+]
+
+# Per-language metadata
+#   native   : human-readable native script name (for tab label)
+#   rtl      : True = right-to-left rendering
+#   instruction : phrase sent to the AI describing the target language
+LANGUAGE_META: dict[str, dict] = {
+    "Arabic – Modern Standard (MSA)": {
+        "native": "العربية", "rtl": True,
+        "instruction": "Modern Standard Arabic (الفصحى)"},
+    "Arabic – Egyptian": {
+        "native": "العربية", "rtl": True,
+        "instruction": "Egyptian Arabic (العامية المصرية)"},
+    "Arabic – Gulf": {
+        "native": "العربية", "rtl": True,
+        "instruction": "Gulf Arabic (اللهجة الخليجية)"},
+    "Arabic – Levantine": {
+        "native": "العربية", "rtl": True,
+        "instruction": "Levantine Arabic (الشامي)"},
+    "Arabic – Maghrebi": {
+        "native": "العربية", "rtl": True,
+        "instruction": "Maghrebi Arabic (الدارجة)"},
+    "English": {
+        "native": "English", "rtl": False,
+        "instruction": "English"},
+    "Hindi – हिंदी": {
+        "native": "हिंदी", "rtl": False,
+        "instruction": "Hindi (हिंदी)"},
+    "Hinglish – Hindi-English Mix": {
+        "native": "Hinglish", "rtl": False,
+        "instruction": "Hinglish (a natural conversational blend of Hindi and English)"},
+    "Tamil – தமிழ்": {
+        "native": "தமிழ்", "rtl": False,
+        "instruction": "Tamil (தமிழ்)"},
+    "Telugu – తెలుగు": {
+        "native": "తెలుగు", "rtl": False,
+        "instruction": "Telugu (తెలుగు)"},
+    "Kannada – ಕನ್ನಡ": {
+        "native": "ಕನ್ನಡ", "rtl": False,
+        "instruction": "Kannada (ಕನ್ನಡ)"},
+    "Malayalam – മലയാളം": {
+        "native": "മലയാളം", "rtl": False,
+        "instruction": "Malayalam (മലയാളം)"},
+    "Marathi – मराठी": {
+        "native": "मराठी", "rtl": False,
+        "instruction": "Marathi (मराठी)"},
+    "Gujarati – ગુજરાતી": {
+        "native": "ગુજરાતી", "rtl": False,
+        "instruction": "Gujarati (ગુજરાતી)"},
+    "Bengali – বাংলা": {
+        "native": "বাংলা", "rtl": False,
+        "instruction": "Bengali (বাংলা)"},
+    "Odia – ଓଡ଼ିଆ": {
+        "native": "ଓଡ଼ିଆ", "rtl": False,
+        "instruction": "Odia (ଓଡ଼ିଆ)"},
+    "Assamese – অসমীয়া": {
+        "native": "অসমীয়া", "rtl": False,
+        "instruction": "Assamese (অসমীয়া)"},
+    "Punjabi – ਪੰਜਾਬੀ": {
+        "native": "ਪੰਜਾਬੀ", "rtl": False,
+        "instruction": "Punjabi (ਪੰਜਾਬੀ)"},
+    "Urdu – اردو": {
+        "native": "اردو", "rtl": True,
+        "instruction": "Urdu (اردو)"},
+}
+
+
+def lang_meta(dialect: str) -> dict:
+    """Return metadata for the selected language, with safe fallback."""
+    return LANGUAGE_META.get(dialect, {"native": dialect, "rtl": False, "instruction": dialect})
+
+
+def native_div(text: str, dialect: str) -> str:
+    """Wrap text in a div with correct direction for the selected language."""
+    meta      = lang_meta(dialect)
+    direction = "rtl" if meta["rtl"] else "ltr"
+    align     = "right" if meta["rtl"] else "left"
+    return (
+        f'<div style="direction:{direction}; text-align:{align}; '
+        f'font-size:15px; line-height:1.8; '
+        f'font-family:\'Segoe UI\',\'Noto Sans\',\'Arial\',sans-serif;">'
+        f'{text}</div>'
+    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -509,7 +645,7 @@ def show_dashboard():
                 "Call ID":      r.get("call_id",""),
                 "Filename":     r.get("filename",""),
                 "Department":   r.get("department",""),
-                "Dialect":      r.get("dialect",""),
+                "Language":     r.get("dialect",""),
                 "Date/Time":    r.get("timestamp","")[:16],
                 "Overall Score":r.get("overall_score",""),
                 "Call Type":    r.get("call_type",""),
@@ -553,8 +689,8 @@ def show_new_analysis():
         list(DEPT_KPIS.keys()),
     )
     dialect = s2.selectbox(
-        "🌍 Arabic Dialect",
-        ["Modern Standard Arabic (MSA)", "Egyptian", "Gulf", "Levantine", "Maghrebi"],
+        "🌍 Language / Dialect",
+        LANGUAGE_OPTIONS,
     )
 
     # Load API key: Super Admin can view/edit; Admin uses stored key silently
@@ -753,13 +889,15 @@ def show_call_detail():
 
 def _render_call_report(record: dict):
     """Shared rendering function for both new analysis and call detail pages."""
-    data  = record.get("analysis", {})
-    cs    = data.get("call_summary", {})
-    sa    = data.get("sentiment_analysis", {})
+    data    = record.get("analysis", {})
+    cs      = data.get("call_summary", {})
+    sa      = data.get("sentiment_analysis", {})
     kpi_list = data.get("kpi_scorecard", [])
     tips     = data.get("coaching_tips", [])
     flags    = data.get("compliance_flags", [])
     score    = cs.get("overall_score", 0)
+    dialect  = record.get("dialect", "English")
+    native   = lang_meta(dialect)["native"]   # native script tab label
 
     # ── Metric row ────────────────────────────────────────
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -778,12 +916,12 @@ def _render_call_report(record: dict):
     with left:
         # Summary
         st.markdown('<div class="section-header">📝 Call Summary</div>', unsafe_allow_html=True)
-        tab_en, tab_ar = st.tabs(["English", "العربية"])
+        tab_en, tab_native = st.tabs(["English", native])
         with tab_en:
             st.info(cs.get("overview_en","—"))
-        with tab_ar:
+        with tab_native:
             st.markdown(
-                f'<div class="arabic-text" dir="rtl">{cs.get("overview_ar","—")}</div>',
+                native_div(cs.get("overview_ar","—"), dialect),
                 unsafe_allow_html=True)
 
         st.markdown("")
@@ -822,14 +960,14 @@ def _render_call_report(record: dict):
         agent_score = agent_s.get("score", 0) or 0
         st.progress(agent_score / 10, text=f"{agent_s.get('label','')} ({agent_score}/10)")
         st.markdown(
-            f'<div class="arabic-text">{agent_s.get("description_ar","")}</div>',
+            native_div(agent_s.get("description_ar",""), dialect),
             unsafe_allow_html=True)
 
         st.markdown("**👤 Customer**")
         cust_score = customer_s.get("score", 0) or 0
         st.progress(cust_score / 10, text=f"{customer_s.get('label','')} ({cust_score}/10)")
         st.markdown(
-            f'<div class="arabic-text">{customer_s.get("description_ar","")}</div>',
+            native_div(customer_s.get("description_ar",""), dialect),
             unsafe_allow_html=True)
 
         trend_icon = {"Improving":"📈","Declining":"📉","Stable":"➡️"}.get(sa.get("sentiment_trend",""),"➡️")
@@ -863,7 +1001,7 @@ def _render_call_report(record: dict):
                         f"**{tip['priority']} Priority · {tip['area']}**"
                     )
                     st.markdown(
-                        f'<div class="arabic-text">{tip["tip_ar"]}</div>',
+                        native_div(tip["tip_ar"], dialect),
                         unsafe_allow_html=True)
                     st.caption(f"🇬🇧 {tip['tip_en']}")
     else:
@@ -908,14 +1046,14 @@ def _generate_text_report(data: dict, department: str, dialect: str, filename: s
         f"Generated : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"System    : HYDA Automated Quality Monitoring",
         f"Department: {department}",
-        f"Dialect   : {dialect}",
+        f"Language  : {dialect}",
         f"File      : {filename}",
         "",
         f"OVERALL SCORE : {score} / 100  ({score_label(score)})",
         "",
         "─" * 60, "CALL SUMMARY", "─" * 60,
         cs.get("overview_en",""),
-        f"\nملخص: {cs.get('overview_ar','')}",
+        f"\nNative Summary: {cs.get('overview_ar','')}",
         f"\nCall Type  : {cs.get('call_type','')}",
         f"Duration   : {cs.get('duration_estimate','')}",
         f"Resolution : {cs.get('resolution_status','')}",
