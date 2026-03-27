@@ -565,10 +565,14 @@ def show_login_page():
 # ═══════════════════════════════════════════════════════════
 
 def show_dashboard():
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from collections import Counter
+
     st.markdown("""
     <div class="hero-banner">
         <h1>📊 HYDA AQM · Call Quality Dashboard</h1>
-        <p>All analysed calls — click <b>View Report</b> to open the full call detail</p>
+        <p>Real-time quality insights across all analysed calls</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -578,88 +582,420 @@ def show_dashboard():
         st.info("No calls have been analysed yet. Use **New Analysis** to upload and analyse a call.")
         return
 
-    # ── Filters ───────────────────────────────────────────
-    with st.expander("🔍 Filter Calls", expanded=False):
-        fc1, fc2, fc3 = st.columns(3)
-        all_depts = sorted(set(r.get("department","") for r in history))
-        sel_dept  = fc1.multiselect("Department", all_depts, default=all_depts)
-        sel_score = fc2.slider("Min Overall Score", 0, 100, 0)
-        all_statuses = sorted(set(r.get("resolution_status","") for r in history if r.get("resolution_status")))
-        sel_status   = fc3.multiselect("Resolution", all_statuses, default=all_statuses)
+    # ═══════════════════════════════════════════════════════
+    # GLOBAL FILTERS (applied to all tabs)
+    # ═══════════════════════════════════════════════════════
+    with st.expander("🔍 Filters", expanded=True):
+        gf1, gf2, gf3, gf4, gf5 = st.columns(5)
 
-    # ── Apply filters ─────────────────────────────────────
+        all_depts    = sorted(set(r.get("department","") for r in history))
+        all_statuses = sorted(set(r.get("resolution_status","") for r in history if r.get("resolution_status")))
+        all_agents   = sorted(set(r.get("agent_name","Unknown") for r in history))
+
+        sel_dept   = gf1.multiselect("Department",  all_depts,    default=all_depts)
+        sel_status = gf2.multiselect("Resolution",  all_statuses, default=all_statuses)
+        sel_agent  = gf3.multiselect("Agent",       all_agents,   default=all_agents)
+        sel_score  = gf4.slider("Min Score", 0, 100, 0)
+
+        # Date range
+        timestamps = [r.get("timestamp","")[:10] for r in history if r.get("timestamp")]
+        min_date   = pd.to_datetime(min(timestamps)).date() if timestamps else datetime.now().date()
+        max_date   = pd.to_datetime(max(timestamps)).date() if timestamps else datetime.now().date()
+        date_range = gf5.date_input("Date Range", value=(min_date, max_date))
+        d_from = date_range[0] if len(date_range) >= 1 else min_date
+        d_to   = date_range[1] if len(date_range) == 2 else max_date
+
+    # Apply all filters
     filtered = [
         r for r in history
-        if r.get("department","") in sel_dept
-        and r.get("overall_score", 0) >= sel_score
+        if r.get("department","")           in sel_dept
         and (not sel_status or r.get("resolution_status","") in sel_status)
+        and r.get("agent_name","Unknown")   in sel_agent
+        and r.get("overall_score", 0)       >= sel_score
+        and d_from <= pd.to_datetime(r.get("timestamp","1970")[:10]).date() <= d_to
     ]
 
-    # ── Summary metrics ───────────────────────────────────
-    if filtered:
-        avg_score  = sum(r.get("overall_score",0) for r in filtered) / len(filtered)
-        high_score = sum(1 for r in filtered if r.get("overall_score",0) >= 80)
-        low_score  = sum(1 for r in filtered if r.get("overall_score",0) < 60)
+    if not filtered:
+        st.warning("No calls match the current filters.")
+        return
 
-        m1, m2, m3, m4 = st.columns(4)
+    # ═══════════════════════════════════════════════════════
+    # PRE-COMPUTE AGGREGATES
+    # ═══════════════════════════════════════════════════════
+    scores        = [r.get("overall_score", 0) for r in filtered]
+    avg_score     = sum(scores) / len(scores)
+    high_count    = sum(1 for s in scores if s >= 80)
+    low_count     = sum(1 for s in scores if s < 60)
+    resolved_count= sum(1 for r in filtered if r.get("resolution_status","") == "Resolved")
+
+    # Compliance flags across all calls
+    all_flags     = []
+    all_tips_area = []
+    for r in filtered:
+        analysis = r.get("analysis", {})
+        all_flags    += analysis.get("compliance_flags", [])
+        all_tips_area += [t.get("area","") for t in analysis.get("coaching_tips", []) if t.get("area")]
+
+    critical_flags = sum(1 for f in all_flags if f.get("severity") == "Critical")
+    warning_flags  = sum(1 for f in all_flags if f.get("severity") == "Warning")
+    info_flags     = sum(1 for f in all_flags if f.get("severity") == "Info")
+
+    # ═══════════════════════════════════════════════════════
+    # TABS
+    # ═══════════════════════════════════════════════════════
+    tab_ov, tab_an, tab_calls, tab_agents = st.tabs(
+        ["📈 Overview", "📊 Analytics", "📋 All Calls", "🏆 Agent Leaderboard"]
+    )
+
+    # ───────────────────────────────────────────────────────
+    # TAB 1 — OVERVIEW
+    # ───────────────────────────────────────────────────────
+    with tab_ov:
+
+        # Top metrics
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("📋 Total Calls",      len(filtered))
-        m2.metric("🎯 Avg Quality Score", f"{avg_score:.1f}/100")
-        m3.metric("✅ High Performing",   high_score)
-        m4.metric("⚠️ Needs Attention",   low_score)
+        m2.metric("🎯 Avg Score",         f"{avg_score:.1f}/100")
+        m3.metric("✅ High Performing",   high_count,    f"{high_count/len(filtered)*100:.0f}%")
+        m4.metric("⚠️ Needs Attention",   low_count,     f"{low_count/len(filtered)*100:.0f}%")
+        m5.metric("✔ Resolved",           resolved_count,f"{resolved_count/len(filtered)*100:.0f}%")
+        m6.metric("🚨 Critical Flags",    critical_flags)
+
         st.divider()
 
-    # ── Table ─────────────────────────────────────────────
-    st.markdown(f'<div class="section-header">📋 Call Records ({len(filtered)} calls)</div>',
-                unsafe_allow_html=True)
+        # ── Compliance flags summary ───────────────────────
+        st.markdown('<div class="section-header">🚨 Compliance Flags Summary</div>', unsafe_allow_html=True)
+        cf1, cf2, cf3 = st.columns(3)
+        with cf1:
+            with st.container(border=True):
+                st.markdown(f"<h2 style='color:#e53935; text-align:center; margin:0'>{critical_flags}</h2>"
+                            f"<p style='text-align:center; color:#888; margin:0'>Critical Flags</p>",
+                            unsafe_allow_html=True)
+        with cf2:
+            with st.container(border=True):
+                st.markdown(f"<h2 style='color:#fb8c00; text-align:center; margin:0'>{warning_flags}</h2>"
+                            f"<p style='text-align:center; color:#888; margin:0'>Warning Flags</p>",
+                            unsafe_allow_html=True)
+        with cf3:
+            with st.container(border=True):
+                st.markdown(f"<h2 style='color:#1e88e5; text-align:center; margin:0'>{info_flags}</h2>"
+                            f"<p style='text-align:center; color:#888; margin:0'>Info Flags</p>",
+                            unsafe_allow_html=True)
 
-    for i, record in enumerate(reversed(filtered)):
-        idx = len(filtered) - 1 - i
-        score = record.get("overall_score", 0)
-        score_color = "#1a6b2e" if score >= 80 else "#7d5a00" if score >= 60 else "#8b1a1a"
-        badge_html  = (
-            f'<span style="background:{score_color}; color:white; padding:3px 10px; '
-            f'border-radius:10px; font-size:13px; font-weight:600;">{score}/100</span>'
+        # Show individual critical flags
+        crit_flags = [f for f in all_flags if f.get("severity") == "Critical"]
+        if crit_flags:
+            with st.expander(f"🔴 View {len(crit_flags)} Critical Flag(s)", expanded=False):
+                for f in crit_flags:
+                    st.error(f"**{f.get('flag','')}** — {f.get('description_ar','')}")
+
+        st.divider()
+
+        # ── Top coaching areas ─────────────────────────────
+        st.markdown('<div class="section-header">💡 Top Coaching Areas Needed</div>', unsafe_allow_html=True)
+        if all_tips_area:
+            area_counts  = Counter(all_tips_area).most_common(8)
+            area_df      = pd.DataFrame(area_counts, columns=["Area", "Count"])
+            fig_coach    = px.bar(
+                area_df, x="Count", y="Area", orientation="h",
+                color="Count",
+                color_continuous_scale=["#2d6a9f","#e53935"],
+                labels={"Count":"No. of Calls", "Area":"Coaching Area"},
+            )
+            fig_coach.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0),
+                height=280, showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                coloraxis_showscale=False,
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig_coach, use_container_width=True)
+        else:
+            st.info("No coaching data yet.")
+
+        st.divider()
+
+        # ── Score trend over time ──────────────────────────
+        st.markdown('<div class="section-header">📈 Quality Score Trend Over Time</div>', unsafe_allow_html=True)
+        trend_df = pd.DataFrame([{
+            "Date":  r.get("timestamp","")[:10],
+            "Score": r.get("overall_score", 0),
+            "Dept":  r.get("department",""),
+        } for r in filtered])
+        trend_df["Date"] = pd.to_datetime(trend_df["Date"])
+        daily_avg = trend_df.groupby("Date")["Score"].mean().reset_index()
+        daily_avg.columns = ["Date","Average Score"]
+        fig_trend = px.line(
+            daily_avg, x="Date", y="Average Score",
+            markers=True,
+            color_discrete_sequence=["#2d6a9f"],
         )
-        res = record.get("resolution_status", "—")
-        res_icon = {"Resolved":"✅","Unresolved":"❌","Partially Resolved":"🟡"}.get(res, "➖")
+        fig_trend.add_hline(y=80, line_dash="dot", line_color="#1a6b2e",
+                            annotation_text="Excellent threshold (80)")
+        fig_trend.add_hline(y=60, line_dash="dot", line_color="#fb8c00",
+                            annotation_text="Good threshold (60)")
+        fig_trend.update_layout(
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=300, yaxis=dict(range=[0,105]),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
 
-        with st.container(border=True):
-            r1, r2, r3, r4, r5, r6, r7 = st.columns([0.4, 2.2, 1.2, 1.2, 1.2, 1.5, 1.2])
-            r1.markdown(f"**#{record.get('call_id','—')}**")
-            r2.markdown(f"🎙️ `{record.get('filename','—')}`")
-            r3.markdown(f"🏢 {record.get('department','—')}")
-            r4.markdown(f"🕐 {record.get('timestamp','—')[:16]}")
-            r5.markdown(badge_html, unsafe_allow_html=True)
-            r6.markdown(f"{res_icon} {res}")
-            if r7.button("📄 View Report", key=f"view_{idx}", use_container_width=True):
-                st.session_state["selected_call"] = record
-                st.session_state["page"] = "call_detail"
-                st.rerun()
+    # ───────────────────────────────────────────────────────
+    # TAB 2 — ANALYTICS
+    # ───────────────────────────────────────────────────────
+    with tab_an:
+        row1_l, row1_r = st.columns(2)
 
-    # ── Export all ────────────────────────────────────────
-    if filtered:
+        # Department avg score
+        with row1_l:
+            st.markdown('<div class="section-header">🏢 Avg Score by Department</div>', unsafe_allow_html=True)
+            dept_df = (
+                pd.DataFrame([{"Department": r.get("department",""), "Score": r.get("overall_score",0)}
+                               for r in filtered])
+                .groupby("Department")["Score"].mean().reset_index()
+                .sort_values("Score", ascending=True)
+            )
+            dept_df.columns = ["Department","Avg Score"]
+            fig_dept = px.bar(
+                dept_df, x="Avg Score", y="Department", orientation="h",
+                color="Avg Score", color_continuous_scale=["#e53935","#fb8c00","#1a6b2e"],
+                range_color=[0, 100],
+                text=dept_df["Avg Score"].apply(lambda x: f"{x:.1f}"),
+            )
+            fig_dept.update_traces(textposition="outside")
+            fig_dept.update_layout(
+                margin=dict(l=0, r=20, t=10, b=0), height=300,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                coloraxis_showscale=False, xaxis=dict(range=[0,110]),
+            )
+            st.plotly_chart(fig_dept, use_container_width=True)
+
+        # Call type distribution
+        with row1_r:
+            st.markdown('<div class="section-header">📂 Call Type Distribution</div>', unsafe_allow_html=True)
+            type_counts = Counter(r.get("call_type","Other") for r in filtered)
+            type_df     = pd.DataFrame(list(type_counts.items()), columns=["Type","Count"])
+            fig_type    = px.pie(
+                type_df, names="Type", values="Count", hole=0.45,
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig_type.update_traces(textposition="outside", textinfo="label+percent")
+            fig_type.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0), height=300,
+                showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.3),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_type, use_container_width=True)
+
+        st.divider()
+
+        row2_l, row2_r = st.columns(2)
+
+        # Resolution breakdown
+        with row2_l:
+            st.markdown('<div class="section-header">✅ Resolution Status Breakdown</div>', unsafe_allow_html=True)
+            res_counts = Counter(r.get("resolution_status","—") for r in filtered)
+            res_df     = pd.DataFrame(list(res_counts.items()), columns=["Status","Count"])
+            color_map  = {"Resolved":"#1a6b2e","Partially Resolved":"#fb8c00","Unresolved":"#e53935"}
+            fig_res    = px.pie(
+                res_df, names="Status", values="Count", hole=0.5,
+                color="Status", color_discrete_map=color_map,
+            )
+            fig_res.update_traces(textposition="outside", textinfo="label+percent")
+            fig_res.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0), height=300,
+                showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=-0.3),
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_res, use_container_width=True)
+
+        # Score distribution histogram
+        with row2_r:
+            st.markdown('<div class="section-header">📊 Score Distribution</div>', unsafe_allow_html=True)
+            score_df = pd.DataFrame({"Score": scores})
+            fig_hist = px.histogram(
+                score_df, x="Score", nbins=10,
+                color_discrete_sequence=["#2d6a9f"],
+                labels={"Score":"Quality Score","count":"No. of Calls"},
+            )
+            fig_hist.add_vline(x=avg_score, line_dash="dash", line_color="#fb8c00",
+                               annotation_text=f"Avg {avg_score:.1f}")
+            fig_hist.update_layout(
+                margin=dict(l=0, r=0, t=10, b=0), height=300,
+                bargap=0.05,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+    # ───────────────────────────────────────────────────────
+    # TAB 3 — ALL CALLS
+    # ───────────────────────────────────────────────────────
+    with tab_calls:
+        # Search bar
+        search = st.text_input("🔎 Search by filename or agent name", placeholder="Type to filter…")
+        if search:
+            s = search.lower()
+            display_list = [
+                r for r in filtered
+                if s in r.get("filename","").lower()
+                or s in r.get("agent_name","").lower()
+            ]
+        else:
+            display_list = filtered
+
+        st.markdown(f'<div class="section-header">📋 Call Records ({len(display_list)} calls)</div>',
+                    unsafe_allow_html=True)
+
+        for i, record in enumerate(reversed(display_list)):
+            idx   = len(display_list) - 1 - i
+            score = record.get("overall_score", 0)
+            score_color = "#1a6b2e" if score >= 80 else "#7d5a00" if score >= 60 else "#8b1a1a"
+            badge_html  = (
+                f'<span style="background:{score_color}; color:white; padding:3px 10px; '
+                f'border-radius:10px; font-size:13px; font-weight:600;">{score}/100</span>'
+            )
+            res      = record.get("resolution_status","—")
+            res_icon = {"Resolved":"✅","Unresolved":"❌","Partially Resolved":"🟡"}.get(res,"➖")
+            agent    = record.get("agent_name","—")
+            aid      = f" · {record.get('agent_id','')}" if record.get("agent_id") else ""
+
+            with st.container(border=True):
+                c1,c2,c3,c4,c5,c6,c7,c8,c9 = st.columns([0.35,1.8,1.2,1.0,1.0,0.9,1.0,1.3,1.0])
+                c1.markdown(f"**#{record.get('call_id','—')}**")
+                c2.markdown(f"🎙️ `{record.get('filename','—')}`")
+                c3.markdown(f"👤 {agent}{aid}")
+                c4.markdown(f"🏢 {record.get('department','—')}")
+                c5.markdown(f"🕐 {record.get('timestamp','—')[:10]}")
+                c6.markdown(f"⏱ {record.get('duration','—')}")
+                c7.markdown(badge_html, unsafe_allow_html=True)
+                c8.markdown(f"{res_icon} {res}")
+                if c9.button("📄 Report", key=f"view_c_{idx}", use_container_width=True):
+                    st.session_state["selected_call"] = record
+                    st.session_state["page"] = "call_detail"
+                    st.rerun()
+
+        # Export
         st.divider()
         rows = []
-        for r in filtered:
+        for r in display_list:
             rows.append({
                 "Call ID":      r.get("call_id",""),
                 "Filename":     r.get("filename",""),
+                "Agent Name":   r.get("agent_name",""),
+                "Agent ID":     r.get("agent_id",""),
                 "Department":   r.get("department",""),
                 "Language":     r.get("dialect",""),
                 "Date/Time":    r.get("timestamp","")[:16],
+                "Duration":     r.get("duration","—"),
                 "Overall Score":r.get("overall_score",""),
                 "Call Type":    r.get("call_type",""),
                 "Resolution":   r.get("resolution_status",""),
                 "Uploaded By":  r.get("uploaded_by",""),
             })
-        df = pd.DataFrame(rows)
+        df  = pd.DataFrame(rows)
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "📥 Export All Records (CSV)",
+            "📥 Export Filtered Records (CSV)",
             data=csv,
             file_name=f"HYDA_AQM_Calls_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
+
+    # ───────────────────────────────────────────────────────
+    # TAB 4 — AGENT LEADERBOARD
+    # ───────────────────────────────────────────────────────
+    with tab_agents:
+        st.markdown('<div class="section-header">🏆 Agent Performance Leaderboard</div>',
+                    unsafe_allow_html=True)
+
+        agent_rows = {}
+        for r in filtered:
+            name  = r.get("agent_name","Unknown")
+            score = r.get("overall_score", 0)
+            res   = r.get("resolution_status","")
+            if name not in agent_rows:
+                agent_rows[name] = {
+                    "Agent":       name,
+                    "Agent ID":    r.get("agent_id",""),
+                    "Department":  r.get("department",""),
+                    "Calls":       0,
+                    "_scores":     [],
+                    "Resolved":    0,
+                }
+            agent_rows[name]["Calls"]    += 1
+            agent_rows[name]["_scores"].append(score)
+            if res == "Resolved":
+                agent_rows[name]["Resolved"] += 1
+
+        leaderboard = []
+        for name, d in agent_rows.items():
+            sc   = d["_scores"]
+            avg  = sum(sc) / len(sc)
+            best = max(sc)
+            worst= min(sc)
+            res_rate = d["Resolved"] / d["Calls"] * 100
+            leaderboard.append({
+                "Agent":           name,
+                "Agent ID":        d["Agent ID"],
+                "Department":      d["Department"],
+                "Calls Analysed":  d["Calls"],
+                "Avg Score":       round(avg, 1),
+                "Best Score":      best,
+                "Worst Score":     worst,
+                "Resolution Rate": f"{res_rate:.0f}%",
+            })
+
+        leaderboard.sort(key=lambda x: x["Avg Score"], reverse=True)
+
+        # Rank + medal
+        for rank, row in enumerate(leaderboard, 1):
+            medal = {1:"🥇", 2:"🥈", 3:"🥉"}.get(rank, f"#{rank}")
+            row["Rank"] = medal
+
+        lb_df = pd.DataFrame(leaderboard)[
+            ["Rank","Agent","Agent ID","Department","Calls Analysed",
+             "Avg Score","Best Score","Worst Score","Resolution Rate"]
+        ]
+
+        st.dataframe(
+            lb_df,
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Avg Score":  st.column_config.ProgressColumn(
+                    "Avg Score", min_value=0, max_value=100, format="%d"),
+                "Best Score": st.column_config.NumberColumn("Best Score"),
+                "Worst Score":st.column_config.NumberColumn("Worst Score"),
+            },
+        )
+
+        st.divider()
+
+        # Agent score bar chart
+        st.markdown('<div class="section-header">📊 Agent Average Scores</div>', unsafe_allow_html=True)
+        agent_chart_df = pd.DataFrame([
+            {"Agent": row["Agent"], "Avg Score": row["Avg Score"]}
+            for row in leaderboard
+        ])
+        fig_agents = px.bar(
+            agent_chart_df.sort_values("Avg Score"),
+            x="Avg Score", y="Agent", orientation="h",
+            color="Avg Score", color_continuous_scale=["#e53935","#fb8c00","#1a6b2e"],
+            range_color=[0, 100],
+            text=agent_chart_df.sort_values("Avg Score")["Avg Score"].apply(lambda x: f"{x:.1f}"),
+        )
+        fig_agents.add_vline(x=80, line_dash="dot", line_color="#1a6b2e",
+                             annotation_text="Excellent (80)")
+        fig_agents.add_vline(x=60, line_dash="dot", line_color="#fb8c00",
+                             annotation_text="Good (60)")
+        fig_agents.update_traces(textposition="outside")
+        fig_agents.update_layout(
+            margin=dict(l=0, r=30, t=10, b=0),
+            height=max(250, len(leaderboard)*50),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            coloraxis_showscale=False, xaxis=dict(range=[0,115]),
+        )
+        st.plotly_chart(fig_agents, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -735,6 +1071,11 @@ def show_new_analysis():
                                 st.warning("⚠️ Key valid but no analysis models found.")
                         except Exception as _e:
                             st.error(f"❌ Connection failed: {str(_e)}")
+
+    # ── Agent details row ─────────────────────────────────
+    a1, a2 = st.columns(2)
+    agent_name = a1.text_input("👤 Agent Name", placeholder="e.g. Ahmed Al-Rashidi")
+    agent_id   = a2.text_input("🪪 Agent ID (optional)", placeholder="e.g. AGT-042")
 
     with st.expander("📋 KPI Criteria (editable)", expanded=False):
         kpis = st.text_area(
@@ -817,9 +1158,12 @@ def show_new_analysis():
                 "dialect":           dialect,
                 "timestamp":         datetime.now().isoformat(),
                 "overall_score":     cs["overall_score"],
+                "duration":          cs.get("duration_estimate","—"),
                 "call_type":         cs.get("call_type","—"),
                 "resolution_status": cs.get("resolution_status","—"),
                 "uploaded_by":       st.session_state["user"]["username"],
+                "agent_name":        agent_name.strip() or "Unknown",
+                "agent_id":          agent_id.strip(),
                 "analysis":          data,
             }
             append_call(record)
