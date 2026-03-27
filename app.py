@@ -7,7 +7,7 @@ HYDA AQM – Automated Call Quality Monitoring
 import streamlit as st
 from google import genai
 from google.genai import types
-import json, time, os, tempfile, hashlib, pathlib
+import json, time, os, tempfile, hashlib, pathlibh
 import pandas as pd
 from datetime import datetime
 
@@ -324,7 +324,7 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
     ordered, seen = [], set()
     for pattern in _PRIORITY_PATTERNS:
         for name in all_model_names:
-            if pattern in name.lower() and name not in seen:
+            if pattern in name.lower() and name not in seen and "tts" not in name.lower() and "embedding" not in name.lower():
                 ordered.append(name); seen.add(name)
     if not ordered:
         ordered = ["models/gemini-2.0-flash-001", "models/gemini-1.5-flash-001"]
@@ -350,7 +350,7 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
             last_exc = exc
             err_str = str(exc).lower()
             if any(k in err_str for k in ("429","resource_exhausted","quota",
-                                           "not found","404","unavailable")):
+                                           "not found","404","unavailable","modality","invalid_argument","audio input")):
                 skipped.append(model_name); continue
             raise RuntimeError(f"Analysis engine error: {exc}") from exc
 
