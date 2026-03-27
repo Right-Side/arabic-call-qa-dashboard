@@ -1,92 +1,190 @@
 """
 =============================================================
-Automated Call Quality Assurance Dashboard
-Powered by HYDA AQM
+HYDA AQM – Automated Call Quality Monitoring
 =============================================================
 """
 
 import streamlit as st
 from google import genai
 from google.genai import types
-import json
-import time
-import os
-import tempfile
+import json, time, os, tempfile, hashlib, pathlib
 import pandas as pd
 from datetime import datetime
-import pathlib
 
 # ─────────────────────────────────────────────
-# PAGE CONFIG
+# PATHS & STORAGE
+# ─────────────────────────────────────────────
+APP_DIR      = pathlib.Path(__file__).parent
+USERS_FILE   = APP_DIR / "users.json"
+HISTORY_FILE = APP_DIR / "call_history.json"
+CONFIG_FILE  = APP_DIR / "config.json"
+
+# ─────────────────────────────────────────────
+# PAGE CONFIG  (must be first Streamlit call)
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Automated Call QA Dashboard",
-    page_icon="📞",
+    page_title="HYDA AQM",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ─────────────────────────────────────────────
-# CUSTOM CSS
+# GLOBAL CSS
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.5rem; }
+/* Layout */
+.block-container { padding-top: 1.2rem; }
 
-    div[data-testid="metric-container"] {
-        background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%);
-        border-radius: 12px;
-        padding: 16px 20px;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    div[data-testid="metric-container"] label,
-    div[data-testid="metric-container"] div { color: white !important; }
+/* Metrics */
+div[data-testid="metric-container"] {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%);
+    border-radius: 12px;
+    padding: 16px 20px;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+div[data-testid="metric-container"] label,
+div[data-testid="metric-container"] div { color: white !important; }
 
-    .section-header {
-        font-size: 18px;
-        font-weight: 700;
-        color: #2d6a9f;
-        border-bottom: 2px solid #2d6a9f;
-        padding-bottom: 6px;
-        margin-bottom: 14px;
-    }
-    .arabic-text {
-        direction: rtl;
-        text-align: right;
-        font-size: 15px;
-        line-height: 1.8;
-        font-family: 'Segoe UI', 'Arial', sans-serif;
-    }
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0d1b2a 0%, #1b2a3b 100%);
-    }
-    section[data-testid="stSidebar"] * { color: #e0e8f0 !important; }
-    .hero-banner {
-        background: linear-gradient(135deg, #0d1b2a 0%, #1e3a5f 50%, #2d6a9f 100%);
-        border-radius: 14px;
-        padding: 28px 36px;
-        color: white;
-        margin-bottom: 24px;
-    }
-    .hero-banner h1 { color: white; font-size: 28px; margin: 0; }
-    .hero-banner p  { color: #a8c8e8; margin: 4px 0 0; font-size: 14px; }
+/* Section headers */
+.section-header {
+    font-size: 17px; font-weight: 700;
+    color: #2d6a9f;
+    border-bottom: 2px solid #2d6a9f;
+    padding-bottom: 6px; margin-bottom: 14px;
+}
+
+/* Arabic RTL */
+.arabic-text {
+    direction: rtl; text-align: right;
+    font-size: 15px; line-height: 1.8;
+    font-family: 'Segoe UI','Arial',sans-serif;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg,#0d1b2a 0%,#1b2a3b 100%);
+}
+section[data-testid="stSidebar"] * { color: #e0e8f0 !important; }
+
+/* Hero banner */
+.hero-banner {
+    background: linear-gradient(135deg,#0d1b2a 0%,#1e3a5f 50%,#2d6a9f 100%);
+    border-radius: 14px;
+    padding: 24px 32px; color: white; margin-bottom: 20px;
+}
+.hero-banner h1 { color: white; font-size: 26px; margin:0; }
+.hero-banner p  { color: #a8c8e8; margin:4px 0 0; font-size: 13px; }
+
+/* Login card */
+.login-card {
+    max-width: 420px; margin: 60px auto;
+    padding: 36px 40px;
+    background: #0d1b2a;
+    border-radius: 16px;
+    border: 1px solid #2d6a9f;
+}
+.login-card h2 { color: #e0e8f0; text-align: center; margin-bottom: 6px; }
+.login-card p  { color: #a8c8e8; text-align: center; margin-bottom: 24px; font-size: 13px; }
+
+/* Badge */
+.badge-admin    { background:#1e4d8c; color:#a8d4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
+.badge-super    { background:#3b1f6e; color:#d0b4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
+
+/* Call row score colouring (applied via pandas Styler) */
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# DATA HELPERS
+# ═══════════════════════════════════════════════════════════
+
+def _hash(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+
+def load_users() -> dict:
+    if USERS_FILE.exists():
+        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    # seed default accounts on first run
+    defaults = {
+        "superadmin": {"password_hash": _hash("Hyda@2024"), "role": "superadmin",
+                       "name": "Super Admin", "created_at": datetime.now().isoformat()},
+        "admin":      {"password_hash": _hash("Hyda@2024"), "role": "admin",
+                       "name": "Admin",       "created_at": datetime.now().isoformat()},
+    }
+    USERS_FILE.write_text(json.dumps(defaults, indent=2, ensure_ascii=False), encoding="utf-8")
+    return defaults
+
+
+def save_users(users: dict):
+    USERS_FILE.write_text(json.dumps(users, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def load_history() -> list:
+    if HISTORY_FILE.exists():
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    return []
+
+
+def save_history(history: list):
+    HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    return {"api_key": ""}
+
+
+def save_config(cfg: dict):
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def append_call(record: dict):
+    history = load_history()
+    history.append(record)
+    save_history(history)
+
+
+# ═══════════════════════════════════════════════════════════
+# AUTH HELPERS
+# ═══════════════════════════════════════════════════════════
+
+def authenticate(username: str, password: str):
+    """Return user dict on success, None on failure."""
+    users = load_users()
+    user = users.get(username.strip().lower())
+    if user and user["password_hash"] == _hash(password):
+        return {"username": username.strip().lower(), **user}
+    return None
+
+
+def require_login():
+    if not st.session_state.get("logged_in"):
+        show_login_page()
+        st.stop()
+
+
+# ═══════════════════════════════════════════════════════════
+# ANALYSIS CORE
+# ═══════════════════════════════════════════════════════════
+
 def score_label(score: int) -> str:
-    if score >= 80:  return "Excellent ✨"
-    if score >= 60:  return "Good 👍"
+    if score >= 80: return "Excellent ✨"
+    if score >= 60: return "Good 👍"
     return "Needs Improvement ⚠️"
+
 
 def priority_emoji(p: str) -> str:
     return {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(p, "⚪")
 
+
 def severity_fn(sev: str):
     return {"Critical": st.error, "Warning": st.warning}.get(sev, st.info)
+
 
 def clean_json(text: str) -> str:
     text = text.strip()
@@ -99,34 +197,26 @@ def clean_json(text: str) -> str:
 
 
 def upload_audio(client: genai.Client, file_bytes: bytes, suffix: str):
-    """Upload audio bytes to Gemini Files API and wait until ACTIVE."""
     mime_map = {
         "mp3": "audio/mpeg", "wav": "audio/wav",  "aac": "audio/aac",
         "m4a": "audio/mp4",  "ogg": "audio/ogg",  "flac": "audio/flac",
     }
     mime = mime_map.get(suffix.lower(), "audio/mpeg")
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{suffix}") as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
-
     try:
         with open(tmp_path, "rb") as f:
             uploaded = client.files.upload(
-                file=f,
-                config=types.UploadFileConfig(mime_type=mime),
-            )
-
-        # Poll until ready (max ~2 minutes)
+                file=f, config=types.UploadFileConfig(mime_type=mime))
         for _ in range(40):
             file_info = client.files.get(name=uploaded.name)
             if file_info.state.name == "ACTIVE":
                 return file_info
             if file_info.state.name == "FAILED":
-                raise RuntimeError("Gemini file processing FAILED.")
+                raise RuntimeError("Audio processing failed — please try a different format.")
             time.sleep(3)
-
-        raise TimeoutError("File did not become ACTIVE within 2 minutes.")
+        raise TimeoutError("Audio processing timed out. Please try again.")
     finally:
         os.unlink(tmp_path)
 
@@ -201,70 +291,26 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
 }}"""
 
 
-def get_best_model(client: genai.Client) -> str:
-    """Dynamically pick the best available Gemini model for audio analysis.
-
-    Returns the exact model name as reported by the API (e.g. 'models/gemini-2.0-flash-001')
-    so the generate_content call never gets a 404.
-    """
-    # Substring patterns checked in order of preference
-    _PRIORITY_PATTERNS = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-flash",
-        "gemini-pro",
-        "gemini-2.5",
-        "gemini-3",
-    ]
-    try:
-        all_names = [m.name for m in client.models.list()]
-        # all_names are like "models/gemini-2.0-flash-001" — use them as-is
-        for pattern in _PRIORITY_PATTERNS:
-            for name in all_names:
-                if pattern in name.lower():
-                    return name          # full name, e.g. "models/gemini-2.0-flash-001"
-        # last resort — any gemini model
-        for name in all_names:
-            if "gemini" in name.lower():
-                return name
-    except Exception:
-        pass
-    return "models/gemini-2.0-flash-001"  # absolute fallback
-
-
-def call_gemini(client: genai.Client, audio_file, system_prompt: str) -> dict:
-    """Send uploaded audio + system prompt to Gemini and return parsed JSON.
-
-    Tries each available model in preference order; skips models that return
-    404 (not available) or 429 (quota exhausted on that model).
-    """
-    try:
-        all_model_names = [m.name for m in client.models.list()]
-    except Exception:
-        all_model_names = []
-
-    # Build ordered list from the live model list using priority patterns
+def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> dict:
     _PRIORITY_PATTERNS = [
         "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro",
         "gemini-2.5-flash", "gemini-2.5-pro", "gemini-flash",
         "gemini-pro", "gemini-2.5", "gemini-3",
     ]
-    ordered: list[str] = []
-    seen: set[str] = set()
+    try:
+        all_model_names = [m.name for m in client.models.list()]
+    except Exception:
+        all_model_names = []
+
+    ordered, seen = [], set()
     for pattern in _PRIORITY_PATTERNS:
         for name in all_model_names:
             if pattern in name.lower() and name not in seen:
-                ordered.append(name)
-                seen.add(name)
+                ordered.append(name); seen.add(name)
     if not ordered:
         ordered = ["models/gemini-2.0-flash-001", "models/gemini-1.5-flash-001"]
 
-    last_exc: Exception | None = None
-    skipped: list[str] = []
-
+    last_exc, skipped = None, []
     for model_name in ordered:
         try:
             response = client.models.generate_content(
@@ -281,43 +327,586 @@ def call_gemini(client: genai.Client, audio_file, system_prompt: str) -> dict:
                 ),
             )
             return json.loads(clean_json(response.text))
-
         except Exception as exc:
             last_exc = exc
             err_str = str(exc).lower()
-            # Skip to next model on quota exhausted or not-found
-            if any(k in err_str for k in ("429", "resource_exhausted", "quota",
-                                           "not found", "404", "unavailable")):
-                skipped.append(model_name)
-                continue
-            # Any other error — fail immediately
-            raise RuntimeError(f"Model '{model_name}' failed: {exc}") from exc
+            if any(k in err_str for k in ("429","resource_exhausted","quota",
+                                           "not found","404","unavailable")):
+                skipped.append(model_name); continue
+            raise RuntimeError(f"Analysis engine error: {exc}") from exc
 
-    # All models exhausted
-    quota_hit = any("quota" in str(e).lower() or "429" in str(e) for e in [last_exc])
-    if quota_hit:
+    if any("quota" in str(e).lower() or "429" in str(e) for e in [last_exc]):
         raise RuntimeError(
-            "All available Gemini models have exceeded their quota on this API key.\n\n"
-            "🔑 Fix: Create a new API key at https://aistudio.google.com/apikey\n"
-            "   → Click 'Create API key in NEW project' to get fresh free-tier quota.\n\n"
+            "Analysis quota exceeded on this API key.\n\n"
+            "🔑 Please enter a valid HYDA AQM API key in settings.\n"
             f"Models tried: {skipped}"
         ) from last_exc
-
     raise RuntimeError(
-        f"No working Gemini model found.\nTried: {skipped}\nLast error: {last_exc}"
+        f"No working analysis model found.\nTried: {skipped}\nLast error: {last_exc}"
     ) from last_exc
 
 
-def generate_text_report(data: dict, department: str, dialect: str, filename: str) -> str:
-    cs    = data["call_summary"]
-    sa    = data["sentiment_analysis"]
-    score = cs["overall_score"]
+DEPT_KPIS = {
+    "Sales": (
+        "1. Did the agent open with the mandatory brand greeting?\n"
+        "2. Did the agent clearly introduce themselves by name?\n"
+        "3. Did the agent identify and confirm the customer's need?\n"
+        "4. Did the agent present product benefits persuasively?\n"
+        "5. Did the agent handle objections professionally?\n"
+        "6. Did the agent attempt to close the sale or schedule a follow-up?\n"
+        "7. Rate overall sales effectiveness (1-10)\n"
+        "8. Was the agent's tone enthusiastic and positive?"
+    ),
+    "Customer Service": (
+        "1. Did the agent greet the customer warmly in Arabic?\n"
+        "2. Did the agent verify the customer's identity?\n"
+        "3. Did the agent listen actively without interrupting?\n"
+        "4. Was the issue resolved to the customer's satisfaction?\n"
+        "5. Did the agent show empathy throughout the call?\n"
+        "6. Did the agent summarise next steps or resolution?\n"
+        "7. Did the agent offer further assistance before closing?\n"
+        "8. Rate customer satisfaction likelihood (1-10)"
+    ),
+    "Collections": (
+        "1. Did the agent verify the customer's identity before discussing the account?\n"
+        "2. Did the agent clearly state the outstanding balance?\n"
+        "3. Did the agent offer a payment plan or settlement option?\n"
+        "4. Was the tone firm but respectful throughout?\n"
+        "5. Did the agent comply with collections regulations?\n"
+        "6. Did the agent document commitments made by the customer?\n"
+        "7. Rate the agent's negotiation effectiveness (1-10)"
+    ),
+    "Technical Support": (
+        "1. Did the agent greet and introduce themselves?\n"
+        "2. Did the agent collect all necessary technical details?\n"
+        "3. Did the agent follow the correct troubleshooting steps?\n"
+        "4. Did the agent explain the solution clearly in Arabic?\n"
+        "5. Did the agent confirm the issue was resolved?\n"
+        "6. Did the agent provide a reference/ticket number?\n"
+        "7. Rate technical competency (1-10)"
+    ),
+}
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: LOGIN
+# ═══════════════════════════════════════════════════════════
+
+def show_login_page():
+    st.markdown("""
+    <div style="text-align:center; padding: 40px 0 10px;">
+        <div style="font-size:48px;">📊</div>
+        <h1 style="color:#2d6a9f; margin:8px 0 2px; font-size:32px;">HYDA AQM</h1>
+        <p style="color:#6c8fa8; font-size:14px;">Automated Quality Monitoring</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_c, col_r = st.columns([1, 1.2, 1])
+    with col_c:
+        with st.container(border=True):
+            st.markdown("### 🔐 Sign In")
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+
+            if st.button("Sign In", type="primary", use_container_width=True):
+                if not username or not password:
+                    st.error("Please enter both username and password.")
+                else:
+                    user = authenticate(username, password)
+                    if user:
+                        st.session_state["logged_in"]  = True
+                        st.session_state["user"]       = user
+                        st.session_state["page"]       = "dashboard"
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid username or password.")
+
+            st.caption("Contact your Super Admin if you need access.")
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: DASHBOARD (call history)
+# ═══════════════════════════════════════════════════════════
+
+def show_dashboard():
+    st.markdown("""
+    <div class="hero-banner">
+        <h1>📊 HYDA AQM · Call Quality Dashboard</h1>
+        <p>All analysed calls — click <b>View Report</b> to open the full call detail</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    history = load_history()
+
+    if not history:
+        st.info("No calls have been analysed yet. Use **New Analysis** to upload and analyse a call.")
+        return
+
+    # ── Filters ───────────────────────────────────────────
+    with st.expander("🔍 Filter Calls", expanded=False):
+        fc1, fc2, fc3 = st.columns(3)
+        all_depts = sorted(set(r.get("department","") for r in history))
+        sel_dept  = fc1.multiselect("Department", all_depts, default=all_depts)
+        sel_score = fc2.slider("Min Overall Score", 0, 100, 0)
+        all_statuses = sorted(set(r.get("resolution_status","") for r in history if r.get("resolution_status")))
+        sel_status   = fc3.multiselect("Resolution", all_statuses, default=all_statuses)
+
+    # ── Apply filters ─────────────────────────────────────
+    filtered = [
+        r for r in history
+        if r.get("department","") in sel_dept
+        and r.get("overall_score", 0) >= sel_score
+        and (not sel_status or r.get("resolution_status","") in sel_status)
+    ]
+
+    # ── Summary metrics ───────────────────────────────────
+    if filtered:
+        avg_score  = sum(r.get("overall_score",0) for r in filtered) / len(filtered)
+        high_score = sum(1 for r in filtered if r.get("overall_score",0) >= 80)
+        low_score  = sum(1 for r in filtered if r.get("overall_score",0) < 60)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("📋 Total Calls",      len(filtered))
+        m2.metric("🎯 Avg Quality Score", f"{avg_score:.1f}/100")
+        m3.metric("✅ High Performing",   high_score)
+        m4.metric("⚠️ Needs Attention",   low_score)
+        st.divider()
+
+    # ── Table ─────────────────────────────────────────────
+    st.markdown(f'<div class="section-header">📋 Call Records ({len(filtered)} calls)</div>',
+                unsafe_allow_html=True)
+
+    for i, record in enumerate(reversed(filtered)):
+        idx = len(filtered) - 1 - i
+        score = record.get("overall_score", 0)
+        score_color = "#1a6b2e" if score >= 80 else "#7d5a00" if score >= 60 else "#8b1a1a"
+        badge_html  = (
+            f'<span style="background:{score_color}; color:white; padding:3px 10px; '
+            f'border-radius:10px; font-size:13px; font-weight:600;">{score}/100</span>'
+        )
+        res = record.get("resolution_status", "—")
+        res_icon = {"Resolved":"✅","Unresolved":"❌","Partially Resolved":"🟡"}.get(res, "➖")
+
+        with st.container(border=True):
+            r1, r2, r3, r4, r5, r6, r7 = st.columns([0.4, 2.2, 1.2, 1.2, 1.2, 1.5, 1.2])
+            r1.markdown(f"**#{record.get('call_id','—')}**")
+            r2.markdown(f"🎙️ `{record.get('filename','—')}`")
+            r3.markdown(f"🏢 {record.get('department','—')}")
+            r4.markdown(f"🕐 {record.get('timestamp','—')[:16]}")
+            r5.markdown(badge_html, unsafe_allow_html=True)
+            r6.markdown(f"{res_icon} {res}")
+            if r7.button("📄 View Report", key=f"view_{idx}", use_container_width=True):
+                st.session_state["selected_call"] = record
+                st.session_state["page"] = "call_detail"
+                st.rerun()
+
+    # ── Export all ────────────────────────────────────────
+    if filtered:
+        st.divider()
+        rows = []
+        for r in filtered:
+            rows.append({
+                "Call ID":      r.get("call_id",""),
+                "Filename":     r.get("filename",""),
+                "Department":   r.get("department",""),
+                "Dialect":      r.get("dialect",""),
+                "Date/Time":    r.get("timestamp","")[:16],
+                "Overall Score":r.get("overall_score",""),
+                "Call Type":    r.get("call_type",""),
+                "Resolution":   r.get("resolution_status",""),
+                "Uploaded By":  r.get("uploaded_by",""),
+            })
+        df = pd.DataFrame(rows)
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Export All Records (CSV)",
+            data=csv,
+            file_name=f"HYDA_AQM_Calls_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: NEW ANALYSIS
+# ═══════════════════════════════════════════════════════════
+
+def show_new_analysis():
+    st.markdown("""
+    <div class="hero-banner">
+        <h1>📞 New Call Analysis</h1>
+        <p>Upload a call recording → HYDA AQM analyses it → Full QA scorecard in Arabic &amp; English</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Settings columns ──────────────────────────────────
+    user_role = st.session_state.get("user", {}).get("role", "admin")
+
+    # Super Admin gets 3 columns (dept / dialect / api key)
+    # Admin gets 2 columns (dept / dialect only — no API section)
+    if user_role == "superadmin":
+        s1, s2, s3 = st.columns(3)
+    else:
+        s1, s2 = st.columns(2)
+
+    department = s1.selectbox(
+        "🏢 Department",
+        list(DEPT_KPIS.keys()),
+    )
+    dialect = s2.selectbox(
+        "🌍 Arabic Dialect",
+        ["Modern Standard Arabic (MSA)", "Egyptian", "Gulf", "Levantine", "Maghrebi"],
+    )
+
+    # Load API key: Super Admin can view/edit; Admin uses stored key silently
+    cfg = load_config()
+    api_key = st.session_state.get("api_key", cfg.get("api_key", ""))
+
+    if user_role == "superadmin":
+        with s3:
+            api_key_input = st.text_input(
+                "🔑 API Key",
+                value=api_key,
+                type="password",
+                placeholder="Enter HYDA AQM API key…",
+            )
+            if api_key_input and api_key_input != api_key:
+                st.session_state["api_key"] = api_key_input
+                cfg["api_key"] = api_key_input
+                save_config(cfg)
+                api_key = api_key_input
+            elif api_key_input:
+                api_key = api_key_input
+
+        # Test connection — Super Admin only
+        with st.expander("🔍 Test API Connection", expanded=False):
+            if st.button("Run Connection Test", type="secondary"):
+                if not api_key:
+                    st.warning("Enter an API key above first.")
+                else:
+                    with st.spinner("Checking…"):
+                        try:
+                            _tc  = genai.Client(api_key=api_key)
+                            _all = list(_tc.models.list())
+                            _gem = [m.name for m in _all
+                                    if "gemini" in m.name.lower()
+                                    and "generateContent" in (
+                                        getattr(m, "supported_actions", [])
+                                        or getattr(m, "supported_generation_methods", [])
+                                    )]
+                            if _gem:
+                                st.success(f"✅ Connection successful — {len(_gem)} analysis models available.")
+                            else:
+                                st.warning("⚠️ Key valid but no analysis models found.")
+                        except Exception as _e:
+                            st.error(f"❌ Connection failed: {str(_e)}")
+
+    with st.expander("📋 KPI Criteria (editable)", expanded=False):
+        kpis = st.text_area(
+            "Success Criteria / KPIs",
+            value=DEPT_KPIS.get(department, DEPT_KPIS["Customer Service"]),
+            height=220,
+            label_visibility="collapsed",
+        )
+    st.divider()
+
+    # ── File uploader ─────────────────────────────────────
+    uploaded_file = st.file_uploader(
+        "📁 Upload Call Recording",
+        type=["mp3", "wav", "aac", "m4a", "ogg", "flac"],
+        help="Supported: MP3, WAV, AAC, M4A, OGG, FLAC",
+    )
+
+    if uploaded_file:
+        st.audio(uploaded_file, format=f"audio/{uploaded_file.name.rsplit('.', 1)[-1]}")
+        st.caption(f"📄 **{uploaded_file.name}** · {uploaded_file.size / 1024:.1f} KB")
+
+        _, col_btn, _ = st.columns([1, 2, 1])
+        with col_btn:
+            process_btn = st.button(
+                "🔍  Analyse Call with HYDA AQM",
+                type="primary", use_container_width=True,
+            )
+
+        if process_btn:
+            if not api_key:
+                if user_role == "superadmin":
+                    st.error("❌ Please enter the HYDA AQM API Key in the field above or in User Management → API Key.")
+                else:
+                    st.error("❌ System is not configured yet. Please contact your Super Admin.")
+                st.stop()
+
+            client     = genai.Client(api_key=api_key)
+            suffix     = uploaded_file.name.rsplit(".", 1)[-1].lower()
+            file_bytes = uploaded_file.read()
+
+            _error_msg, _error_detail, data = None, None, None
+
+            with st.status("⏳ Processing…", expanded=True) as status:
+                st.write("📤 Uploading audio for processing…")
+                try:
+                    audio_file = upload_audio(client, file_bytes, suffix)
+                except Exception as e:
+                    status.update(label="❌ Upload failed", state="error")
+                    _error_msg, _error_detail = f"Upload error: {str(e)}", e
+
+                if _error_msg is None:
+                    st.write("🧠 Running HYDA AQM quality analysis…")
+                    system_prompt = build_system_prompt(department, dialect, kpis)
+                    try:
+                        data = call_analysis_api(client, audio_file, system_prompt)
+                    except json.JSONDecodeError as e:
+                        status.update(label="❌ Parse error", state="error")
+                        _error_msg, _error_detail = f"Could not parse analysis response: {str(e)}", e
+                    except Exception as e:
+                        status.update(label="❌ Analysis failed", state="error")
+                        _error_msg, _error_detail = str(e), e
+
+                if _error_msg is None:
+                    status.update(label="✅ Analysis complete!", state="complete", expanded=False)
+
+            if _error_msg:
+                st.error(f"❌ {_error_msg}")
+                with st.expander("🔍 Technical details"):
+                    st.exception(_error_detail)
+                st.stop()
+
+            # ── Save to history ───────────────────────────
+            history = load_history()
+            call_id = len(history) + 1
+            cs = data["call_summary"]
+            record = {
+                "call_id":           call_id,
+                "filename":          uploaded_file.name,
+                "department":        department,
+                "dialect":           dialect,
+                "timestamp":         datetime.now().isoformat(),
+                "overall_score":     cs["overall_score"],
+                "call_type":         cs.get("call_type","—"),
+                "resolution_status": cs.get("resolution_status","—"),
+                "uploaded_by":       st.session_state["user"]["username"],
+                "analysis":          data,
+            }
+            append_call(record)
+
+            # ── Render results ────────────────────────────
+            _render_call_report(record)
+
+    else:
+        # landing state
+        st.markdown("### 👆 Upload a call recording above to get started")
+        cols = st.columns(4)
+        features = [
+            ("🌍","Multi-Dialect Arabic",
+             "MSA, Egyptian, Gulf, Levantine & Maghrebi — including code-switching."),
+            ("📋","Custom KPI Engine",
+             "Define your own criteria. Get Pass/Fail results with Arabic reasoning."),
+            ("📊","Rich QA Dashboard",
+             "Sentiment scores, compliance flags, key moments & coaching tips."),
+            ("📥","Export Reports",
+             "Download full QA reports as .txt or structured .json."),
+        ]
+        for col, (icon, title, desc) in zip(cols, features):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"#### {icon} {title}")
+                    st.write(desc)
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: CALL DETAIL
+# ═══════════════════════════════════════════════════════════
+
+def show_call_detail():
+    record = st.session_state.get("selected_call")
+    if not record:
+        st.warning("No call selected. Go back to the Dashboard.")
+        if st.button("← Back to Dashboard"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+        return
+
+    data  = record.get("analysis", {})
+    cs    = data.get("call_summary", {})
+    sa    = data.get("sentiment_analysis", {})
+    score = cs.get("overall_score", 0)
+
+    # ── Header ────────────────────────────────────────────
+    back_col, title_col = st.columns([1, 8])
+    with back_col:
+        if st.button("← Back"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+    with title_col:
+        st.markdown(
+            f'<div class="hero-banner">'
+            f'<h1>📄 Call Report — {record.get("filename","")}</h1>'
+            f'<p>Call #{record.get("call_id","")} · '
+            f'{record.get("department","")} · '
+            f'{record.get("timestamp","")[:16]} · '
+            f'Uploaded by: {record.get("uploaded_by","")}</p>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    _render_call_report(record)
+
+
+def _render_call_report(record: dict):
+    """Shared rendering function for both new analysis and call detail pages."""
+    data  = record.get("analysis", {})
+    cs    = data.get("call_summary", {})
+    sa    = data.get("sentiment_analysis", {})
+    kpi_list = data.get("kpi_scorecard", [])
+    tips     = data.get("coaching_tips", [])
+    flags    = data.get("compliance_flags", [])
+    score    = cs.get("overall_score", 0)
+
+    # ── Metric row ────────────────────────────────────────
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("🎯 Overall Score",  f"{score}/100",  score_label(score))
+    m2.metric("⏱ Duration",        cs.get("duration_estimate","—"))
+    m3.metric("📂 Call Type",       cs.get("call_type","—"))
+    m4.metric("✅ Resolution",      cs.get("resolution_status","—"))
+    m5.metric("😊 Agent Sentiment",
+              f"{sa.get('agent_sentiment',{}).get('score','—')}/10",
+              sa.get('agent_sentiment',{}).get('label',''))
+    st.divider()
+
+    # ── Two-column body ───────────────────────────────────
+    left, right = st.columns([3, 2], gap="large")
+
+    with left:
+        # Summary
+        st.markdown('<div class="section-header">📝 Call Summary</div>', unsafe_allow_html=True)
+        tab_en, tab_ar = st.tabs(["English", "العربية"])
+        with tab_en:
+            st.info(cs.get("overview_en","—"))
+        with tab_ar:
+            st.markdown(
+                f'<div class="arabic-text" dir="rtl">{cs.get("overview_ar","—")}</div>',
+                unsafe_allow_html=True)
+
+        st.markdown("")
+        # KPI Scorecard
+        st.markdown('<div class="section-header">✅ KPI Scorecard</div>', unsafe_allow_html=True)
+        if kpi_list:
+            rows = []
+            for kpi in kpi_list:
+                icon = "✅" if kpi["status"] == "Pass" else "❌" if kpi["status"] == "Fail" else "➖"
+                score_disp = f"{kpi['score']}/10" if kpi.get("score") is not None else "—"
+                rows.append({
+                    "KPI":               kpi["kpi_name"],
+                    "Result":            f"{icon} {kpi['status']}",
+                    "Score":             score_disp,
+                    "Reasoning (AR)":    kpi.get("reasoning_ar",""),
+                    "Evidence":          kpi.get("evidence",""),
+                })
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "Reasoning (AR)": st.column_config.TextColumn(width="large"),
+                    "Evidence":       st.column_config.TextColumn(width="medium"),
+                },
+            )
+        else:
+            st.info("No KPI data returned.")
+
+    with right:
+        # Sentiment
+        st.markdown('<div class="section-header">💭 Sentiment Analysis</div>', unsafe_allow_html=True)
+        agent_s    = sa.get("agent_sentiment", {})
+        customer_s = sa.get("customer_sentiment", {})
+
+        st.markdown("**🎧 Agent**")
+        agent_score = agent_s.get("score", 0) or 0
+        st.progress(agent_score / 10, text=f"{agent_s.get('label','')} ({agent_score}/10)")
+        st.markdown(
+            f'<div class="arabic-text">{agent_s.get("description_ar","")}</div>',
+            unsafe_allow_html=True)
+
+        st.markdown("**👤 Customer**")
+        cust_score = customer_s.get("score", 0) or 0
+        st.progress(cust_score / 10, text=f"{customer_s.get('label','')} ({cust_score}/10)")
+        st.markdown(
+            f'<div class="arabic-text">{customer_s.get("description_ar","")}</div>',
+            unsafe_allow_html=True)
+
+        trend_icon = {"Improving":"📈","Declining":"📉","Stable":"➡️"}.get(sa.get("sentiment_trend",""),"➡️")
+        st.markdown(f"**Trend:** {trend_icon} {sa.get('sentiment_trend','')}")
+
+        if sa.get("key_moments"):
+            with st.expander("⏱ Key Moments"):
+                for m in sa["key_moments"]:
+                    st.markdown(f"- **{m.get('timestamp','?')}** — {m.get('event','')}")
+
+        # Compliance Flags
+        if flags:
+            st.markdown("")
+            st.markdown('<div class="section-header">🚨 Compliance Flags</div>', unsafe_allow_html=True)
+            for flag in flags:
+                severity_fn(flag["severity"])(
+                    f"**[{flag['severity']}] {flag['flag']}**\n\n"
+                    + flag.get("description_ar","")
+                )
+
+    # ── Coaching Tips ─────────────────────────────────────
+    st.divider()
+    st.markdown('<div class="section-header">💡 Coaching Recommendations</div>', unsafe_allow_html=True)
+    if tips:
+        tip_cols = st.columns(min(len(tips), 3))
+        for i, tip in enumerate(tips):
+            with tip_cols[i % len(tip_cols)]:
+                with st.container(border=True):
+                    st.markdown(
+                        f"{priority_emoji(tip['priority'])} "
+                        f"**{tip['priority']} Priority · {tip['area']}**"
+                    )
+                    st.markdown(
+                        f'<div class="arabic-text">{tip["tip_ar"]}</div>',
+                        unsafe_allow_html=True)
+                    st.caption(f"🇬🇧 {tip['tip_en']}")
+    else:
+        st.info("No coaching tips returned.")
+
+    # ── Export ────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 📥 Export Report")
+    base      = record.get("filename","call").rsplit(".",1)[0]
+    timestamp = record.get("timestamp","")[:16].replace("T","_").replace(":","")
+    txt_report  = _generate_text_report(data, record.get("department",""),
+                                        record.get("dialect",""), record.get("filename",""))
+    json_report = json.dumps(data, ensure_ascii=False, indent=2)
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "📄 Download Text Report (.txt)",
+            data=txt_report,
+            file_name=f"HYDA_AQM_{base}_{timestamp}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    with dl2:
+        st.download_button(
+            "🗂 Download JSON Data (.json)",
+            data=json_report,
+            file_name=f"HYDA_AQM_{base}_{timestamp}.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+
+
+def _generate_text_report(data: dict, department: str, dialect: str, filename: str) -> str:
+    cs    = data.get("call_summary", {})
+    sa    = data.get("sentiment_analysis", {})
+    score = cs.get("overall_score", 0)
     lines = [
         "=" * 60,
-        "  ARABIC CALL QUALITY ASSURANCE REPORT",
+        "  HYDA AQM — CALL QUALITY ASSURANCE REPORT",
         "=" * 60,
         f"Generated : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"Model     : Google Gemini 2.0 Flash",
+        f"System    : HYDA Automated Quality Monitoring",
         f"Department: {department}",
         f"Dialect   : {dialect}",
         f"File      : {filename}",
@@ -325,22 +914,22 @@ def generate_text_report(data: dict, department: str, dialect: str, filename: st
         f"OVERALL SCORE : {score} / 100  ({score_label(score)})",
         "",
         "─" * 60, "CALL SUMMARY", "─" * 60,
-        cs.get("overview_en", ""),
-        f"\nملخص: {cs.get('overview_ar', '')}",
-        f"\nCall Type  : {cs.get('call_type', '')}",
-        f"Duration   : {cs.get('duration_estimate', '')}",
-        f"Resolution : {cs.get('resolution_status', '')}",
+        cs.get("overview_en",""),
+        f"\nملخص: {cs.get('overview_ar','')}",
+        f"\nCall Type  : {cs.get('call_type','')}",
+        f"Duration   : {cs.get('duration_estimate','')}",
+        f"Resolution : {cs.get('resolution_status','')}",
         "",
         "─" * 60, "SENTIMENT ANALYSIS", "─" * 60,
-        f"Agent    : {sa['agent_sentiment']['label']} ({sa['agent_sentiment']['score']}/10)",
-        sa['agent_sentiment']['description_ar'],
-        f"\nCustomer : {sa['customer_sentiment']['label']} ({sa['customer_sentiment']['score']}/10)",
-        sa['customer_sentiment']['description_ar'],
-        f"\nTrend    : {sa['sentiment_trend']}",
+        f"Agent    : {sa.get('agent_sentiment',{}).get('label','')} ({sa.get('agent_sentiment',{}).get('score','')} /10)",
+        sa.get("agent_sentiment",{}).get("description_ar",""),
+        f"\nCustomer : {sa.get('customer_sentiment',{}).get('label','')} ({sa.get('customer_sentiment',{}).get('score','')} /10)",
+        sa.get("customer_sentiment",{}).get("description_ar",""),
+        f"\nTrend    : {sa.get('sentiment_trend','')}",
         "",
         "─" * 60, "KPI SCORECARD", "─" * 60,
     ]
-    for kpi in data.get("kpi_scorecard", []):
+    for kpi in data.get("kpi_scorecard",[]):
         s = f"  Score: {kpi['score']}/10" if kpi.get("score") is not None else ""
         lines += [f"\n• {kpi['kpi_name']}", f"  Status : {kpi['status']}{s}",
                   f"  {kpi.get('reasoning_ar','')}"]
@@ -348,387 +937,262 @@ def generate_text_report(data: dict, department: str, dialect: str, filename: st
             lines.append(f'  Evidence: "{kpi["evidence"]}"')
 
     lines += ["", "─" * 60, "COACHING RECOMMENDATIONS", "─" * 60]
-    for tip in data.get("coaching_tips", []):
+    for tip in data.get("coaching_tips",[]):
         lines += [f"\n[{tip['priority']}] {tip['area']}",
                   f"  AR: {tip['tip_ar']}", f"  EN: {tip['tip_en']}"]
 
     if data.get("compliance_flags"):
         lines += ["", "─" * 60, "COMPLIANCE FLAGS", "─" * 60]
         for flag in data["compliance_flags"]:
-            lines += [f"\n[{flag['severity']}] {flag['flag']}", f"  {flag.get('description_ar','')}"]
+            lines += [f"\n[{flag['severity']}] {flag['flag']}",
+                      f"  {flag.get('description_ar','')}"]
 
-    lines += ["", "=" * 60, "RAW JSON DATA", "=" * 60,
+    lines += ["","=" * 60,"RAW JSON DATA","=" * 60,
               json.dumps(data, ensure_ascii=False, indent=2)]
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 📞 QA Dashboard")
-    st.markdown("*Automated Call Analytics*")
-    st.divider()
+# ═══════════════════════════════════════════════════════════
+# PAGE: USER MANAGEMENT  (Super Admin only)
+# ═══════════════════════════════════════════════════════════
 
-    st.markdown("### 🔑 API Configuration")
-    api_key = st.text_input(
-        "Google AI Studio API Key",
-        type="password",
-        placeholder="AIza...",
-        help="Free key at https://aistudio.google.com/",
-    )
-
-    st.divider()
-    st.markdown("### ⚙️ Analysis Settings")
-
-    department = st.selectbox(
-        "🏢 Department",
-        ["Sales", "Customer Service", "Collections", "Technical Support"],
-    )
-    dialect = st.selectbox(
-        "🌍 Arabic Dialect",
-        ["Modern Standard Arabic (MSA)", "Egyptian", "Gulf", "Levantine", "Maghrebi"],
-    )
-
-    st.divider()
-    st.markdown("### 📋 Evaluation KPIs")
-    st.caption("Enter each criterion on a new line.")
-
-    dept_kpis = {
-        "Sales": (
-            "1. Did the agent open with the mandatory brand greeting?\n"
-            "2. Did the agent clearly introduce themselves by name?\n"
-            "3. Did the agent identify and confirm the customer's need?\n"
-            "4. Did the agent present product benefits persuasively?\n"
-            "5. Did the agent handle objections professionally?\n"
-            "6. Did the agent attempt to close the sale or schedule a follow-up?\n"
-            "7. Rate overall sales effectiveness (1-10)\n"
-            "8. Was the agent's tone enthusiastic and positive?"
-        ),
-        "Customer Service": (
-            "1. Did the agent greet the customer warmly in Arabic?\n"
-            "2. Did the agent verify the customer's identity?\n"
-            "3. Did the agent listen actively without interrupting?\n"
-            "4. Was the issue resolved to the customer's satisfaction?\n"
-            "5. Did the agent show empathy throughout the call?\n"
-            "6. Did the agent summarise next steps or resolution?\n"
-            "7. Did the agent offer further assistance before closing?\n"
-            "8. Rate customer satisfaction likelihood (1-10)"
-        ),
-        "Collections": (
-            "1. Did the agent verify the customer's identity before discussing the account?\n"
-            "2. Did the agent clearly state the outstanding balance?\n"
-            "3. Did the agent offer a payment plan or settlement option?\n"
-            "4. Was the tone firm but respectful throughout?\n"
-            "5. Did the agent comply with collections regulations?\n"
-            "6. Did the agent document commitments made by the customer?\n"
-            "7. Rate the agent's negotiation effectiveness (1-10)"
-        ),
-        "Technical Support": (
-            "1. Did the agent greet and introduce themselves?\n"
-            "2. Did the agent collect all necessary technical details?\n"
-            "3. Did the agent follow the correct troubleshooting steps?\n"
-            "4. Did the agent explain the solution clearly in Arabic?\n"
-            "5. Did the agent confirm the issue was resolved?\n"
-            "6. Did the agent provide a reference/ticket number?\n"
-            "7. Rate technical competency (1-10)"
-        ),
-    }
-
-    kpis = st.text_area(
-        "Success Criteria / KPIs",
-        value=dept_kpis.get(department, dept_kpis["Customer Service"]),
-        height=260,
-    )
-
-    st.divider()
-
-    # ── API Connection Test ───────────────────────────────
-    if api_key:
-        if st.button("🔍 Test API Connection", use_container_width=True,
-                     help="Lists the Gemini models available on your API key"):
-            with st.spinner("Checking…"):
-                try:
-                    _tc = genai.Client(api_key=api_key)
-                    _all = list(_tc.models.list())
-                    _gem = [m.name for m in _all
-                            if "gemini" in m.name.lower()
-                            and "generateContent" in (getattr(m, "supported_actions", [])
-                                                       or getattr(m, "supported_generation_methods", []))]
-                    if _gem:
-                        st.success(f"✅ Valid key! {len(_gem)} Gemini models available.")
-                        with st.expander("📋 Available models"):
-                            for _m in _gem:
-                                st.code(_m)
-                    else:
-                        _all_names = [m.name for m in _all if "gemini" in m.name.lower()]
-                        st.warning(f"⚠️ Key valid but no generateContent-capable Gemini models found. "
-                                   f"All Gemini entries: {_all_names}")
-                except Exception as _e:
-                    st.error(f"❌ {str(_e)}")
-
-    st.divider()
-    st.caption("v1.0.1 · Gemini API · Arabic QA")
-
-
-# ─────────────────────────────────────────────
-# HERO BANNER
-# ─────────────────────────────────────────────
-st.markdown("""
-<div class="hero-banner">
-    <h1>📞 Automated Call QA Dashboard</h1>
-    <p>Upload a call recording → Gemini analyses it in seconds → Full QA scorecard in Arabic &amp; English</p>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ─────────────────────────────────────────────
-# FILE UPLOADER
-# ─────────────────────────────────────────────
-uploaded_file = st.file_uploader(
-    "📁 Upload Call Recording",
-    type=["mp3", "wav", "aac", "m4a", "ogg", "flac"],
-    help="Supported: MP3, WAV, AAC, M4A, OGG, FLAC",
-)
-
-if uploaded_file:
-    st.audio(uploaded_file, format=f"audio/{uploaded_file.name.rsplit('.', 1)[-1]}")
-    st.caption(f"📄 **{uploaded_file.name}** · {uploaded_file.size / 1024:.1f} KB")
-
-    _, col_btn, _ = st.columns([1, 2, 1])
-    with col_btn:
-        process_btn = st.button("🔍  Analyse Call with HYDA AQM",
-                                type="primary", use_container_width=True)
-
-    if process_btn:
-        if not api_key:
-            st.error("❌ Please enter your Google AI Studio API Key in the sidebar.")
-            st.stop()
-
-        client = genai.Client(api_key=api_key)
-        suffix = uploaded_file.name.rsplit(".", 1)[-1].lower()
-        file_bytes = uploaded_file.read()
-
-        # ── Upload + Analyse ──────────────────────────────────
-        _error_msg = None
-        _error_detail = None
-        data = None
-
-        with st.status("⏳ Processing…", expanded=True) as status:
-            st.write("📤 Uploading audio to Gemini Files API…")
-            try:
-                audio_file = upload_audio(client, file_bytes, suffix)
-            except Exception as e:
-                status.update(label="❌ Upload failed", state="error")
-                _error_msg = f"Upload error: {str(e)}"
-                _error_detail = e
-
-            if _error_msg is None:
-                st.write("🧠 Analysing with Gemini (auto-selecting best available model)…")
-                system_prompt = build_system_prompt(department, dialect, kpis)
-                try:
-                    data = call_gemini(client, audio_file, system_prompt)
-                except json.JSONDecodeError as e:
-                    status.update(label="❌ JSON parse error", state="error")
-                    _error_msg = f"Could not parse Gemini response as JSON: {str(e)}"
-                    _error_detail = e
-                except Exception as e:
-                    status.update(label="❌ Analysis failed", state="error")
-                    _error_msg = (
-                        f"Gemini API error: {str(e)}\n\n"
-                        "💡 Common fixes:\n"
-                        "• Make sure your API key is valid (get one at aistudio.google.com)\n"
-                        "• Check you haven't exceeded the free-tier quota\n"
-                        "• Try a different audio file format (WAV or MP3 work best)"
-                    )
-                    _error_detail = e
-
-            if _error_msg is None:
-                status.update(label="✅ Analysis complete!", state="complete", expanded=False)
-
-        # Show errors OUTSIDE the status widget so they're always visible
-        if _error_msg:
-            st.error(f"❌ {_error_msg}")
-            with st.expander("🔍 Full error details (share this when reporting a bug)"):
-                st.exception(_error_detail)
-            st.stop()
-
-        # ── Extract sections ──────────────────────────────────
-        cs         = data["call_summary"]
-        sa         = data["sentiment_analysis"]
-        kpi_list   = data.get("kpi_scorecard", [])
-        tips       = data.get("coaching_tips", [])
-        flags      = data.get("compliance_flags", [])
-        score      = cs["overall_score"]
-
-        st.divider()
-
-        # ── Metric row ────────────────────────────────────────
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("🎯 Overall Score",   f"{score}/100",      score_label(score))
-        m2.metric("⏱ Duration",         cs.get("duration_estimate", "—"))
-        m3.metric("📂 Call Type",        cs.get("call_type", "—"))
-        m4.metric("✅ Resolution",       cs.get("resolution_status", "—"))
-        m5.metric("😊 Agent Sentiment",
-                  f"{sa['agent_sentiment']['score']}/10",
-                  sa['agent_sentiment']['label'])
-
-        st.divider()
-
-        # ── Two-column body ───────────────────────────────────
-        left, right = st.columns([3, 2], gap="large")
-
-        with left:
-            # Summary
-            st.markdown('<div class="section-header">📝 Call Summary</div>', unsafe_allow_html=True)
-            tab_en, tab_ar = st.tabs(["English", "العربية"])
-            with tab_en:
-                st.info(cs.get("overview_en", "—"))
-            with tab_ar:
-                st.markdown(
-                    f'<div class="arabic-text" dir="rtl">{cs.get("overview_ar", "—")}</div>',
-                    unsafe_allow_html=True)
-
-            st.markdown("")
-            # KPI Scorecard
-            st.markdown('<div class="section-header">✅ KPI Scorecard</div>', unsafe_allow_html=True)
-            if kpi_list:
-                rows = []
-                for kpi in kpi_list:
-                    icon = "✅" if kpi["status"] == "Pass" else "❌" if kpi["status"] == "Fail" else "➖"
-                    score_disp = f"{kpi['score']}/10" if kpi.get("score") is not None else "—"
-                    rows.append({
-                        "KPI": kpi["kpi_name"],
-                        "Result": f"{icon} {kpi['status']}",
-                        "Score": score_disp,
-                        "Reasoning (Arabic)": kpi.get("reasoning_ar", ""),
-                        "Evidence": kpi.get("evidence", ""),
-                    })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True,
-                             column_config={
-                                 "Reasoning (Arabic)": st.column_config.TextColumn(width="large"),
-                                 "Evidence": st.column_config.TextColumn(width="medium"),
-                             })
-            else:
-                st.info("No KPI data returned.")
-
-        with right:
-            # Sentiment
-            st.markdown('<div class="section-header">💭 Sentiment Analysis</div>', unsafe_allow_html=True)
-
-            agent_s    = sa["agent_sentiment"]
-            customer_s = sa["customer_sentiment"]
-
-            st.markdown("**🎧 Agent**")
-            st.progress(agent_s["score"] / 10,
-                        text=f"{agent_s['label']}  ({agent_s['score']}/10)")
-            st.markdown(
-                f'<div class="arabic-text">{agent_s["description_ar"]}</div>',
-                unsafe_allow_html=True)
-
-            st.markdown("**👤 Customer**")
-            st.progress(customer_s["score"] / 10,
-                        text=f"{customer_s['label']}  ({customer_s['score']}/10)")
-            st.markdown(
-                f'<div class="arabic-text">{customer_s["description_ar"]}</div>',
-                unsafe_allow_html=True)
-
-            trend_icon = {"Improving": "📈", "Declining": "📉", "Stable": "➡️"}.get(
-                sa["sentiment_trend"], "➡️")
-            st.markdown(f"**Trend:** {trend_icon} {sa['sentiment_trend']}")
-
-            if sa.get("key_moments"):
-                with st.expander("⏱ Key Moments"):
-                    for m in sa["key_moments"]:
-                        st.markdown(f"- **{m.get('timestamp','?')}** — {m.get('event','')}")
-
-            # Compliance Flags
-            if flags:
-                st.markdown("")
-                st.markdown('<div class="section-header">🚨 Compliance Flags</div>', unsafe_allow_html=True)
-                for flag in flags:
-                    severity_fn(flag["severity"])(
-                        f"**[{flag['severity']}] {flag['flag']}**\n\n"
-                        + flag.get("description_ar", "")
-                    )
-
-        # ── Coaching Tips ─────────────────────────────────────
-        st.divider()
-        st.markdown('<div class="section-header">💡 Coaching Recommendations</div>', unsafe_allow_html=True)
-
-        if tips:
-            tip_cols = st.columns(min(len(tips), 3))
-            for i, tip in enumerate(tips):
-                with tip_cols[i % len(tip_cols)]:
-                    with st.container(border=True):
-                        st.markdown(
-                            f"{priority_emoji(tip['priority'])} "
-                            f"**{tip['priority']} Priority · {tip['area']}**"
-                        )
-                        st.markdown(
-                            f'<div class="arabic-text">{tip["tip_ar"]}</div>',
-                            unsafe_allow_html=True)
-                        st.caption(f"🇬🇧 {tip['tip_en']}")
-        else:
-            st.info("No coaching tips returned.")
-
-        # ── Export ────────────────────────────────────────────
-        st.divider()
-        st.markdown("### 📥 Export Report")
-
-        base      = uploaded_file.name.rsplit(".", 1)[0]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-        txt_report  = generate_text_report(data, department, dialect, uploaded_file.name)
-        json_report = json.dumps(data, ensure_ascii=False, indent=2)
-
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            st.download_button(
-                "📄 Download Text Report (.txt)",
-                data=txt_report,
-                file_name=f"QA_Report_{base}_{timestamp}.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with dl2:
-            st.download_button(
-                "🗂 Download JSON Data (.json)",
-                data=json_report,
-                file_name=f"QA_Data_{base}_{timestamp}.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-
-# ─────────────────────────────────────────────
-# LANDING STATE
-# ─────────────────────────────────────────────
-else:
-    st.markdown("### 👆 Upload a call recording above to get started")
-    st.markdown("")
-
-    cols = st.columns(4)
-    features = [
-        ("🌍", "Multi-Dialect Arabic",
-         "MSA, Egyptian, Gulf, Levantine & Maghrebi — including Arabic-English code-switching."),
-        ("📋", "Custom KPI Engine",
-         "Define your own criteria. Get Pass/Fail results with Arabic-language reasoning."),
-        ("📊", "Rich QA Dashboard",
-         "Sentiment scores, compliance flags, key moments & prioritised coaching tips."),
-        ("📥", "Export Reports",
-         "Download full QA reports as .txt or structured .json — ready for your QA system."),
-    ]
-    for col, (icon, title, desc) in zip(cols, features):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"#### {icon} {title}")
-                st.write(desc)
-
-    st.divider()
+def show_user_management():
     st.markdown("""
-**Quick Start:**
-1. Paste your **Google AI Studio API key** in the sidebar → [Get one free here](https://aistudio.google.com/)
-2. Select **Department** and **Arabic Dialect**
-3. Customise the **KPI criteria** for your QA framework
-4. Upload an **MP3 / WAV / AAC** call recording
-5. Click **Analyse Call** and wait ~15–30 seconds
-    """)
+    <div class="hero-banner">
+        <h1>👥 User Management</h1>
+        <p>Add, edit, or remove Admin accounts</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    users = load_users()
+
+    # ── Existing users table ──────────────────────────────
+    st.markdown('<div class="section-header">Current Users</div>', unsafe_allow_html=True)
+    for uname, udata in users.items():
+        role = udata.get("role","admin")
+        badge = (f'<span class="badge-super">Super Admin</span>' if role == "superadmin"
+                 else f'<span class="badge-admin">Admin</span>')
+        c1, c2, c3, c4 = st.columns([2, 2, 2, 1.5])
+        c1.markdown(f"**{uname}**")
+        c2.markdown(f"👤 {udata.get('name','')}")
+        c3.markdown(badge, unsafe_allow_html=True)
+        # Don't allow deleting the superadmin account
+        if role != "superadmin":
+            if c4.button("🗑 Remove", key=f"del_{uname}"):
+                del users[uname]
+                save_users(users)
+                st.success(f"User '{uname}' removed.")
+                st.rerun()
+        else:
+            c4.caption("(protected)")
+
+    st.divider()
+
+    # ── Add new user ──────────────────────────────────────
+    st.markdown('<div class="section-header">➕ Add New User</div>', unsafe_allow_html=True)
+    with st.form("add_user_form", clear_on_submit=True):
+        na1, na2 = st.columns(2)
+        new_name     = na1.text_input("Full Name")
+        new_username = na2.text_input("Username (login ID)")
+        nb1, nb2 = st.columns(2)
+        new_pw       = nb1.text_input("Password", type="password")
+        new_role     = nb2.selectbox("Role", ["admin", "superadmin"])
+        submitted = st.form_submit_button("Create User", type="primary")
+
+        if submitted:
+            if not new_name or not new_username or not new_pw:
+                st.error("Please fill in all fields.")
+            elif new_username.lower() in users:
+                st.error(f"Username '{new_username}' already exists.")
+            else:
+                users[new_username.lower()] = {
+                    "password_hash": _hash(new_pw),
+                    "role":          new_role,
+                    "name":          new_name,
+                    "created_at":    datetime.now().isoformat(),
+                }
+                save_users(users)
+                st.success(f"✅ User '{new_username}' created successfully.")
+                st.rerun()
+
+    st.divider()
+
+    # ── API Key Configuration ─────────────────────────────
+    st.markdown('<div class="section-header">🔑 API Key Configuration</div>', unsafe_allow_html=True)
+    st.caption("This key is used by all users for call analysis. Admins never see it.")
+
+    cfg = load_config()
+    current_key = cfg.get("api_key", "")
+    with st.form("api_key_form", clear_on_submit=False):
+        new_api_key = st.text_input(
+            "HYDA AQM API Key",
+            value=current_key,
+            type="password",
+            placeholder="Enter API key…",
+        )
+        ak1, ak2 = st.columns([2, 1])
+        save_key = ak1.form_submit_button("💾 Save API Key", type="primary")
+        test_key = ak2.form_submit_button("🔍 Test Connection")
+
+        if save_key:
+            if not new_api_key:
+                st.error("API key cannot be empty.")
+            else:
+                cfg["api_key"] = new_api_key
+                save_config(cfg)
+                st.session_state["api_key"] = new_api_key
+                st.success("✅ API key saved successfully.")
+
+        if test_key:
+            key_to_test = new_api_key or current_key
+            if not key_to_test:
+                st.warning("Enter an API key first.")
+            else:
+                with st.spinner("Checking connection…"):
+                    try:
+                        _tc  = genai.Client(api_key=key_to_test)
+                        _all = list(_tc.models.list())
+                        _gem = [m.name for m in _all
+                                if "gemini" in m.name.lower()
+                                and "generateContent" in (
+                                    getattr(m, "supported_actions", [])
+                                    or getattr(m, "supported_generation_methods", [])
+                                )]
+                        if _gem:
+                            st.success(f"✅ Connection successful — {len(_gem)} analysis models available.")
+                        else:
+                            st.warning("⚠️ Key valid but no analysis models found.")
+                    except Exception as _e:
+                        st.error(f"❌ Connection failed: {str(_e)}")
+
+    st.divider()
+
+    # ── Change Password ───────────────────────────────────
+    st.markdown('<div class="section-header">🔑 Change Password</div>', unsafe_allow_html=True)
+    with st.form("change_pw_form", clear_on_submit=True):
+        target_user = st.selectbox("Select User", list(users.keys()))
+        cp1, cp2   = st.columns(2)
+        new_pw1    = cp1.text_input("New Password", type="password")
+        new_pw2    = cp2.text_input("Confirm Password", type="password")
+        if st.form_submit_button("Update Password", type="primary"):
+            if not new_pw1:
+                st.error("Password cannot be empty.")
+            elif new_pw1 != new_pw2:
+                st.error("Passwords do not match.")
+            else:
+                users[target_user]["password_hash"] = _hash(new_pw1)
+                save_users(users)
+                st.success(f"✅ Password updated for '{target_user}'.")
+
+
+# ═══════════════════════════════════════════════════════════
+# SIDEBAR NAVIGATION
+# ═══════════════════════════════════════════════════════════
+
+def render_sidebar():
+    user = st.session_state.get("user", {})
+    role = user.get("role","admin")
+
+    with st.sidebar:
+        # Logo + brand
+        st.markdown("""
+        <div style="text-align:center; padding: 10px 0 16px;">
+            <div style="font-size:36px;">📊</div>
+            <div style="font-size:20px; font-weight:700; letter-spacing:1px;">HYDA AQM</div>
+            <div style="font-size:11px; color:#a8c8e8;">Automated Quality Monitoring</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.divider()
+
+        # User info
+        badge_html = (
+            '<span class="badge-super">Super Admin</span>' if role == "superadmin"
+            else '<span class="badge-admin">Admin</span>'
+        )
+        st.markdown(
+            f"👤 **{user.get('name', user.get('username',''))}**<br>"
+            f"{badge_html}",
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
+        # Navigation
+        st.markdown("### Navigation")
+        current_page = st.session_state.get("page","dashboard")
+
+        if st.button("📊  Dashboard", use_container_width=True,
+                     type="primary" if current_page=="dashboard" else "secondary"):
+            st.session_state["page"] = "dashboard"
+            st.rerun()
+
+        if st.button("➕  New Analysis", use_container_width=True,
+                     type="primary" if current_page=="new_analysis" else "secondary"):
+            st.session_state["page"] = "new_analysis"
+            st.rerun()
+
+        if role == "superadmin":
+            if st.button("👥  User Management", use_container_width=True,
+                         type="primary" if current_page=="user_management" else "secondary"):
+                st.session_state["page"] = "user_management"
+                st.rerun()
+
+        st.divider()
+
+        # API key status
+        _cfg_key = load_config().get("api_key", "") or st.session_state.get("api_key", "")
+        _user_role = st.session_state.get("user", {}).get("role", "admin")
+        if _cfg_key:
+            st.success("🟢 System Ready")
+        elif _user_role == "superadmin":
+            st.warning("⚠️ API Key not configured\n\nSet it in **User Management → API Key**.")
+        else:
+            st.warning("⚠️ System not ready\n\nContact your Super Admin.")
+
+        st.divider()
+
+        # Logout
+        if st.button("🚪 Sign Out", use_container_width=True):
+            for key in ["logged_in","user","page","selected_call","api_key"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+        st.caption("v2.0 · HYDA AQM · Arabic QA")
+
+
+# ═══════════════════════════════════════════════════════════
+# MAIN ROUTER
+# ═══════════════════════════════════════════════════════════
+
+def main():
+    # Initialise session state
+    if "page" not in st.session_state:
+        st.session_state["page"] = "dashboard"
+
+    # Not logged in → show login page
+    if not st.session_state.get("logged_in"):
+        show_login_page()
+        return
+
+    # Logged in → render sidebar + page
+    render_sidebar()
+
+    page = st.session_state.get("page","dashboard")
+    user_role = st.session_state.get("user",{}).get("role","admin")
+
+    if page == "dashboard":
+        show_dashboard()
+    elif page == "new_analysis":
+        show_new_analysis()
+    elif page == "call_detail":
+        show_call_detail()
+    elif page == "user_management":
+        if user_role == "superadmin":
+            show_user_management()
+        else:
+            st.error("⛔ Access denied. Super Admin only.")
+    else:
+        show_dashboard()
+
+
+if __name__ == "__main__" or True:
+    main()
