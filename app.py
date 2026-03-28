@@ -135,9 +135,17 @@ def save_history(history: list):
 
 
 def load_config() -> dict:
+    defaults = {
+        "api_key":      "",   # Google Gemini key
+        "provider":     "gemini",  # active provider
+        "openai_key":   "",   # OpenAI key (GPT-4o-mini + Whisper transcription)
+        "mistral_key":  "",   # Mistral key
+        "deepseek_key": "",   # DeepSeek key
+    }
     if CONFIG_FILE.exists():
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    return {"api_key": ""}
+        stored = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return {**defaults, **stored}   # merge so new keys are always present
+    return defaults
 
 
 def save_config(cfg: dict):
@@ -317,6 +325,9 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
         "gemini-2.5-flash", "gemini-2.5-pro", "gemini-flash",
         "gemini-pro", "gemini-2.5", "gemini-3",
     ]
+    # Models that cannot process audio input — exclude entirely
+    _EXCLUDE_KEYWORDS = ("tts", "embedding", "aqa", "retrieval", "vision-only")
+
     try:
         all_model_names = [m.name for m in client.models.list()]
     except Exception:
@@ -325,8 +336,10 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
     ordered, seen = [], set()
     for pattern in _PRIORITY_PATTERNS:
         for name in all_model_names:
-            if pattern in name.lower() and name not in seen and "tts" not in name.lower() and "embedding" not in name.lower():
-                ordered.append(name); seen.add(name)
+            name_lower = name.lower()
+            if pattern in name_lower and name not in seen:
+                if not any(ex in name_lower for ex in _EXCLUDE_KEYWORDS):
+                    ordered.append(name); seen.add(name)
     if not ordered:
         ordered = ["models/gemini-2.0-flash-001", "models/gemini-1.5-flash-001"]
 
@@ -360,8 +373,11 @@ def call_analysis_api(client: genai.Client, audio_file, system_prompt: str) -> d
         except Exception as exc:
             last_exc = exc
             err_str = str(exc).lower()
-            if any(k in err_str for k in ("429","resource_exhausted","quota",
-                                           "not found","404","unavailable","modality","invalid_argument","audio input")):
+            # Skip to next model for quota, not-found, unavailable, OR modality errors
+            if any(k in err_str for k in ("429", "resource_exhausted", "quota",
+                                           "not found", "404", "unavailable",
+                                           "modality", "invalid_argument",
+                                           "audio input")):
                 skipped.append(model_name); continue
             raise RuntimeError(f"Analysis engine error: {exc}") from exc
 
@@ -533,6 +549,143 @@ def native_div(text: str, dialect: str) -> str:
         f'font-family:\'Segoe UI\',\'Noto Sans\',\'Arial\',sans-serif;">'
         f'{text}</div>'
     )
+
+
+# ─────────────────────────────────────────────────────────
+# PROVIDER REGISTRY
+# ─────────────────────────────────────────────────────────
+PROVIDERS = {
+    "gemini": {
+        "name":        "Google Gemini (auto-select)",
+        "icon":        "⚡",
+        "desc":        "Native audio support. Auto-selects Flash → Pro.",
+        "key_field":   "api_key",
+        "key_label":   "Google AI API Key",
+        "audio_native": True,
+        "needs_whisper": False,
+    },
+    "openai_mini": {
+        "name":        "OpenAI GPT-4o-mini",
+        "icon":        "🤖",
+        "desc":        "Cheap & fast. Uses Whisper for transcription. One key.",
+        "key_field":   "openai_key",
+        "key_label":   "OpenAI API Key",
+        "audio_native": False,
+        "needs_whisper": True,
+    },
+    "mistral_small": {
+        "name":        "Mistral Small",
+        "icon":        "🌪️",
+        "desc":        "Very affordable. Needs OpenAI key for Whisper transcription.",
+        "key_field":   "mistral_key",
+        "key_label":   "Mistral API Key",
+        "audio_native": False,
+        "needs_whisper": True,
+    },
+    "deepseek_v3": {
+        "name":        "DeepSeek V3",
+        "icon":        "🔮",
+        "desc":        "Extremely cheap. Needs OpenAI key for Whisper transcription.",
+        "key_field":   "deepseek_key",
+        "key_label":   "DeepSeek API Key",
+        "audio_native": False,
+        "needs_whisper": True,
+    },
+}
+
+
+# ─────────────────────────────────────────────────────────
+# MULTI-PROVIDER ANALYSIS HELPERS
+# ─────────────────────────────────────────────────────────
+
+def transcribe_with_whisper(file_bytes: bytes, suffix: str, openai_key: str) -> str:
+    """Transcribe audio using OpenAI Whisper. Returns plain-text transcript."""
+    from openai import OpenAI as _OAI
+    import tempfile as _tmp, os as _os
+    client = _OAI(api_key=openai_key)
+    with _tmp.NamedTemporaryFile(delete=False, suffix=f".{suffix}") as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        with open(tmp_path, "rb") as f:
+            result = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="text",
+            )
+        return result
+    finally:
+        _os.unlink(tmp_path)
+
+
+def _parse_llm_json(text: str) -> dict:
+    """Clean and parse JSON from an LLM response, with auto-repair fallback."""
+    cleaned = clean_json(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        repaired = repair_json(cleaned, return_objects=True)
+        if isinstance(repaired, dict) and repaired:
+            return repaired
+        raise RuntimeError("Could not parse analysis response as valid JSON.")
+
+
+def _call_openai_provider(transcript: str, system_prompt: str,
+                          api_key: str, model: str,
+                          base_url: str = None) -> dict:
+    """Generic OpenAI-compatible chat completion (covers GPT-4o-mini and DeepSeek)."""
+    from openai import OpenAI as _OAI
+    kwargs: dict = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    client = _OAI(**kwargs)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content":
+                "Analyse this call transcript according to your system instructions. "
+                "Return ONLY the JSON object.\n\n" + transcript},
+        ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+    return _parse_llm_json(response.choices[0].message.content)
+
+
+def _call_mistral_provider(transcript: str, system_prompt: str, api_key: str) -> dict:
+    """Mistral Small chat completion."""
+    from mistralai import Mistral as _Mistral
+    client = _Mistral(api_key=api_key)
+    response = client.chat.complete(
+        model="mistral-small-latest",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content":
+                "Analyse this call transcript according to your system instructions. "
+                "Return ONLY the JSON object.\n\n" + transcript},
+        ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+    return _parse_llm_json(response.choices[0].message.content)
+
+
+def call_analysis_text(transcript: str, system_prompt: str,
+                       provider: str, cfg: dict) -> dict:
+    """Route a text-based analysis request to the selected provider."""
+    if provider == "openai_mini":
+        return _call_openai_provider(
+            transcript, system_prompt, cfg["openai_key"], "gpt-4o-mini")
+    elif provider == "mistral_small":
+        return _call_mistral_provider(
+            transcript, system_prompt, cfg["mistral_key"])
+    elif provider == "deepseek_v3":
+        return _call_openai_provider(
+            transcript, system_prompt, cfg["deepseek_key"],
+            "deepseek-chat", base_url="https://api.deepseek.com")
+    else:
+        raise ValueError(f"call_analysis_text: unknown provider '{provider}'")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1024,12 +1177,7 @@ def show_new_analysis():
     # ── Settings columns ──────────────────────────────────
     user_role = st.session_state.get("user", {}).get("role", "admin")
 
-    # Super Admin gets 3 columns (dept / dialect / api key)
-    # Admin gets 2 columns (dept / dialect only — no API section)
-    if user_role == "superadmin":
-        s1, s2, s3 = st.columns(3)
-    else:
-        s1, s2 = st.columns(2)
+    s1, s2 = st.columns(2)
 
     department = s1.selectbox(
         "🏢 Department",
@@ -1040,48 +1188,16 @@ def show_new_analysis():
         LANGUAGE_OPTIONS,
     )
 
-    # Load API key: Super Admin can view/edit; Admin uses stored key silently
+    # Load config (provider + all keys)
     cfg = load_config()
-    api_key = st.session_state.get("api_key", cfg.get("api_key", ""))
+    provider = cfg.get("provider", "gemini")
+    pinfo    = PROVIDERS.get(provider, PROVIDERS["gemini"])
 
-    if user_role == "superadmin":
-        with s3:
-            api_key_input = st.text_input(
-                "🔑 API Key",
-                value=api_key,
-                type="password",
-                placeholder="Enter HYDA AQM API key…",
-            )
-            if api_key_input and api_key_input != api_key:
-                st.session_state["api_key"] = api_key_input
-                cfg["api_key"] = api_key_input
-                save_config(cfg)
-                api_key = api_key_input
-            elif api_key_input:
-                api_key = api_key_input
-
-        # Test connection — Super Admin only
-        with st.expander("🔍 Test API Connection", expanded=False):
-            if st.button("Run Connection Test", type="secondary"):
-                if not api_key:
-                    st.warning("Enter an API key above first.")
-                else:
-                    with st.spinner("Checking…"):
-                        try:
-                            _tc  = genai.Client(api_key=api_key)
-                            _all = list(_tc.models.list())
-                            _gem = [m.name for m in _all
-                                    if "gemini" in m.name.lower()
-                                    and "generateContent" in (
-                                        getattr(m, "supported_actions", [])
-                                        or getattr(m, "supported_generation_methods", [])
-                                    )]
-                            if _gem:
-                                st.success(f"✅ Connection successful — {len(_gem)} analysis models available.")
-                            else:
-                                st.warning("⚠️ Key valid but no analysis models found.")
-                        except Exception as _e:
-                            st.error(f"❌ Connection failed: {str(_e)}")
+    # Show active provider chip
+    manage_hint = " — change in **User Management → AI Provider**." if user_role == "superadmin" else ""
+    st.caption(
+        f"🤖 Active provider: **{pinfo['icon']} {pinfo['name']}** — {pinfo['desc']}{manage_hint}"
+    )
 
     # ── Agent details row ─────────────────────────────────
     a1, a2 = st.columns(2)
@@ -1116,38 +1232,76 @@ def show_new_analysis():
             )
 
         if process_btn:
-            if not api_key:
+            # ── Validate keys for the active provider ────────
+            primary_key = cfg.get(pinfo["key_field"], "")
+            if not primary_key:
                 if user_role == "superadmin":
-                    st.error("❌ Please enter the HYDA AQM API Key in the field above or in User Management → API Key.")
+                    st.error(
+                        f"❌ No API key set for **{pinfo['name']}**. "
+                        "Go to **User Management → AI Provider** to configure it."
+                    )
                 else:
                     st.error("❌ System is not configured yet. Please contact your Super Admin.")
                 st.stop()
 
-            client     = genai.Client(api_key=api_key)
+            # Non-Gemini providers need OpenAI key for Whisper transcription
+            whisper_key = cfg.get("openai_key", "")
+            if pinfo["needs_whisper"] and provider != "openai_mini" and not whisper_key:
+                st.error(
+                    f"❌ **{pinfo['name']}** requires an OpenAI key to transcribe audio via Whisper. "
+                    "Add it in **User Management → AI Provider**."
+                )
+                st.stop()
+            # For openai_mini, whisper uses the same key
+            if provider == "openai_mini":
+                whisper_key = primary_key
+
             suffix     = uploaded_file.name.rsplit(".", 1)[-1].lower()
             file_bytes = uploaded_file.read()
+            system_prompt = build_system_prompt(department, dialect, kpis)
 
             _error_msg, _error_detail, data = None, None, None
 
             with st.status("⏳ Processing…", expanded=True) as status:
-                st.write("📤 Uploading audio for processing…")
-                try:
-                    audio_file = upload_audio(client, file_bytes, suffix)
-                except Exception as e:
-                    status.update(label="❌ Upload failed", state="error")
-                    _error_msg, _error_detail = f"Upload error: {str(e)}", e
-
-                if _error_msg is None:
-                    st.write("🧠 Running HYDA AQM quality analysis…")
-                    system_prompt = build_system_prompt(department, dialect, kpis)
+                if pinfo["audio_native"]:
+                    # ── Gemini path: native audio upload ─────
+                    st.write("📤 Uploading audio for processing…")
                     try:
-                        data = call_analysis_api(client, audio_file, system_prompt)
-                    except json.JSONDecodeError as e:
-                        status.update(label="❌ Parse error", state="error")
-                        _error_msg, _error_detail = f"Could not parse analysis response: {str(e)}", e
+                        gemini_client = genai.Client(api_key=primary_key)
+                        audio_file = upload_audio(gemini_client, file_bytes, suffix)
                     except Exception as e:
-                        status.update(label="❌ Analysis failed", state="error")
-                        _error_msg, _error_detail = str(e), e
+                        status.update(label="❌ Upload failed", state="error")
+                        _error_msg, _error_detail = f"Upload error: {str(e)}", e
+
+                    if _error_msg is None:
+                        st.write(f"🧠 Analysing with {pinfo['icon']} {pinfo['name']}…")
+                        try:
+                            data = call_analysis_api(gemini_client, audio_file, system_prompt)
+                        except json.JSONDecodeError as e:
+                            status.update(label="❌ Parse error", state="error")
+                            _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
+                        except Exception as e:
+                            status.update(label="❌ Analysis failed", state="error")
+                            _error_msg, _error_detail = str(e), e
+                else:
+                    # ── Non-Gemini path: Whisper → text analysis ──
+                    st.write("🎙️ Transcribing audio with Whisper…")
+                    try:
+                        transcript = transcribe_with_whisper(file_bytes, suffix, whisper_key)
+                    except Exception as e:
+                        status.update(label="❌ Transcription failed", state="error")
+                        _error_msg, _error_detail = f"Whisper transcription error: {str(e)}", e
+
+                    if _error_msg is None:
+                        st.write(f"🧠 Analysing with {pinfo['icon']} {pinfo['name']}…")
+                        try:
+                            data = call_analysis_text(transcript, system_prompt, provider, cfg)
+                        except json.JSONDecodeError as e:
+                            status.update(label="❌ Parse error", state="error")
+                            _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
+                        except Exception as e:
+                            status.update(label="❌ Analysis failed", state="error")
+                            _error_msg, _error_detail = str(e), e
 
                 if _error_msg is None:
                     status.update(label="✅ Analysis complete!", state="complete", expanded=False)
@@ -1510,22 +1664,123 @@ def show_user_management():
 
     st.divider()
 
-    # ── API Key Configuration ─────────────────────────────
-    st.markdown('<div class="section-header">🔑 API Key Configuration</div>', unsafe_allow_html=True)
-    st.caption("This key is used by all users for call analysis. Admins never see it.")
+    # ── AI Provider Configuration ─────────────────────────
+    st.markdown('<div class="section-header">🤖 AI Provider Configuration</div>', unsafe_allow_html=True)
+    st.caption("Choose which AI provider analyses your calls. Each provider needs its own API key.")
 
     cfg = load_config()
+    active_provider = cfg.get("provider", "gemini")
+
+    provider_labels = {k: f"{v['icon']} {v['name']} — {v['desc']}" for k, v in PROVIDERS.items()}
+    provider_keys   = list(PROVIDERS.keys())
+    active_idx      = provider_keys.index(active_provider) if active_provider in provider_keys else 0
+
+    selected_provider = st.selectbox(
+        "Active Provider",
+        options=provider_keys,
+        index=active_idx,
+        format_func=lambda k: provider_labels[k],
+        key="prov_select",
+    )
+    sel_info = PROVIDERS[selected_provider]
+
+    with st.form("provider_config_form", clear_on_submit=False):
+        st.markdown(f"**{sel_info['icon']} {sel_info['name']} — Keys**")
+
+        # Primary key for the selected provider
+        pk_field = sel_info["key_field"]
+        primary_val = cfg.get(pk_field, "")
+        new_primary = st.text_input(
+            sel_info["key_label"],
+            value=primary_val,
+            type="password",
+            placeholder=f"Enter {sel_info['key_label']}…",
+        )
+
+        # If the provider needs Whisper and isn't OpenAI (which reuses its own key)
+        new_whisper = None
+        if sel_info["needs_whisper"] and selected_provider != "openai_mini":
+            st.markdown("**OpenAI Key (for Whisper audio transcription)**")
+            new_whisper = st.text_input(
+                "OpenAI API Key",
+                value=cfg.get("openai_key", ""),
+                type="password",
+                placeholder="Enter OpenAI key (Whisper)…",
+                key="whisper_key_input",
+            )
+
+        pf1, pf2 = st.columns([2, 1])
+        save_prov = pf1.form_submit_button("💾 Save Provider Settings", type="primary")
+        test_prov = pf2.form_submit_button("🔍 Test Connection")
+
+        if save_prov:
+            if not new_primary:
+                st.error(f"{sel_info['key_label']} cannot be empty.")
+            elif sel_info["needs_whisper"] and selected_provider != "openai_mini" and not new_whisper:
+                st.error("OpenAI key for Whisper transcription cannot be empty for this provider.")
+            else:
+                cfg["provider"]    = selected_provider
+                cfg[pk_field]      = new_primary
+                if new_whisper is not None:
+                    cfg["openai_key"] = new_whisper
+                save_config(cfg)
+                st.success(f"✅ Provider set to **{sel_info['name']}** and keys saved.")
+
+        if test_prov:
+            key_to_test = new_primary or cfg.get(pk_field, "")
+            if not key_to_test:
+                st.warning("Enter the API key first.")
+            else:
+                with st.spinner("Testing connection…"):
+                    try:
+                        if selected_provider == "gemini":
+                            _tc  = genai.Client(api_key=key_to_test)
+                            _all = list(_tc.models.list())
+                            _gem = [m.name for m in _all
+                                    if "gemini" in m.name.lower()
+                                    and "generateContent" in (
+                                        getattr(m, "supported_actions", [])
+                                        or getattr(m, "supported_generation_methods", [])
+                                    )]
+                            if _gem:
+                                st.success(f"✅ Gemini: {len(_gem)} models available.")
+                            else:
+                                st.warning("⚠️ Key valid but no analysis models found.")
+                        elif selected_provider == "openai_mini":
+                            from openai import OpenAI as _OAI
+                            _oc = _OAI(api_key=key_to_test)
+                            _models = [m.id for m in _oc.models.list() if "gpt-4o" in m.id]
+                            st.success(f"✅ OpenAI: connected. GPT-4o models: {len(_models)}")
+                        elif selected_provider == "mistral_small":
+                            from mistralai import Mistral as _M
+                            _mc = _M(api_key=key_to_test)
+                            _mc.models.list()
+                            st.success("✅ Mistral: connection successful.")
+                        elif selected_provider == "deepseek_v3":
+                            from openai import OpenAI as _OAI
+                            _dc = _OAI(api_key=key_to_test, base_url="https://api.deepseek.com")
+                            _dc.models.list()
+                            st.success("✅ DeepSeek: connection successful.")
+                    except Exception as _e:
+                        st.error(f"❌ Connection failed: {str(_e)}")
+
+    st.divider()
+
+    # ── Google Gemini Key (legacy / always useful as fallback) ──
+    st.markdown('<div class="section-header">🔑 Google Gemini API Key</div>', unsafe_allow_html=True)
+    st.caption("Required if using the Gemini provider. Admins never see this key.")
+
     current_key = cfg.get("api_key", "")
     with st.form("api_key_form", clear_on_submit=False):
         new_api_key = st.text_input(
-            "HYDA AQM API Key",
+            "Google AI API Key",
             value=current_key,
             type="password",
-            placeholder="Enter API key…",
+            placeholder="Enter Google AI key…",
         )
         ak1, ak2 = st.columns([2, 1])
-        save_key = ak1.form_submit_button("💾 Save API Key", type="primary")
-        test_key = ak2.form_submit_button("🔍 Test Connection")
+        save_key = ak1.form_submit_button("💾 Save Gemini Key", type="primary")
+        test_key = ak2.form_submit_button("🔍 Test Gemini")
 
         if save_key:
             if not new_api_key:
@@ -1534,14 +1789,14 @@ def show_user_management():
                 cfg["api_key"] = new_api_key
                 save_config(cfg)
                 st.session_state["api_key"] = new_api_key
-                st.success("✅ API key saved successfully.")
+                st.success("✅ Gemini API key saved.")
 
         if test_key:
             key_to_test = new_api_key or current_key
             if not key_to_test:
                 st.warning("Enter an API key first.")
             else:
-                with st.spinner("Checking connection…"):
+                with st.spinner("Checking…"):
                     try:
                         _tc  = genai.Client(api_key=key_to_test)
                         _all = list(_tc.models.list())
@@ -1631,13 +1886,16 @@ def render_sidebar():
 
         st.divider()
 
-        # API key status
-        _cfg_key = load_config().get("api_key", "") or st.session_state.get("api_key", "")
-        _user_role = st.session_state.get("user", {}).get("role", "admin")
-        if _cfg_key:
-            st.success("🟢 System Ready")
+        # Provider + readiness status
+        _cfg        = load_config()
+        _provider   = _cfg.get("provider", "gemini")
+        _pinfo      = PROVIDERS.get(_provider, PROVIDERS["gemini"])
+        _pkey       = _cfg.get(_pinfo["key_field"], "")
+        _user_role  = st.session_state.get("user", {}).get("role", "admin")
+        if _pkey:
+            st.success(f"🟢 System Ready\n\n{_pinfo['icon']} {_pinfo['name']}")
         elif _user_role == "superadmin":
-            st.warning("⚠️ API Key not configured\n\nSet it in **User Management → API Key**.")
+            st.warning("⚠️ API Key not configured\n\nSet it in **User Management → AI Provider**.")
         else:
             st.warning("⚠️ System not ready\n\nContact your Super Admin.")
 
@@ -1649,7 +1907,7 @@ def render_sidebar():
                 st.session_state.pop(key, None)
             st.rerun()
 
-        st.caption("v2.0 · HYDA AQM · Arabic QA")
+        st.caption("v2.1 · HYDA AQM · Multi-Provider")
 
 
 # ═══════════════════════════════════════════════════════════
