@@ -1274,7 +1274,7 @@ def show_new_analysis():
                         _error_msg, _error_detail = f"Upload error: {str(e)}", e
 
                     if _error_msg is None:
-                        st.write(f"🧠 Analysing with {pinfo['icon']} {pinfo['name']}…")
+                        st.write(f"🧠 Analysing with HYDA AQM")
                         try:
                             data = call_analysis_api(gemini_client, audio_file, system_prompt)
                         except json.JSONDecodeError as e:
@@ -1293,7 +1293,7 @@ def show_new_analysis():
                         _error_msg, _error_detail = f"Whisper transcription error: {str(e)}", e
 
                     if _error_msg is None:
-                        st.write(f"🧠 Analysing with {pinfo['icon']} {pinfo['name']}…")
+                        st.write(f"🧠 Analysing with HYDA AQM")
                         try:
                             data = call_analysis_text(transcript, system_prompt, provider, cfg)
                         except json.JSONDecodeError as e:
@@ -1893,7 +1893,7 @@ def render_sidebar():
         _pkey       = _cfg.get(_pinfo["key_field"], "")
         _user_role  = st.session_state.get("user", {}).get("role", "admin")
         if _pkey:
-            st.success(f"🟢 System Ready\n\n{_pinfo['icon']} {_pinfo['name']}")
+            st.success(f"🟢 System Ready")
         elif _user_role == "superadmin":
             st.warning("⚠️ API Key not configured\n\nSet it in **User Management → AI Provider**.")
         else:
