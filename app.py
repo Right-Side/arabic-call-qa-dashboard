@@ -19,6 +19,8 @@ APP_DIR      = pathlib.Path(__file__).parent
 USERS_FILE   = APP_DIR / "users.json"
 HISTORY_FILE = APP_DIR / "call_history.json"
 CONFIG_FILE  = APP_DIR / "config.json"
+AUDIO_DIR    = APP_DIR / "audio_store"
+AUDIO_DIR.mkdir(exist_ok=True)
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG  (must be first Streamlit call)
@@ -93,6 +95,12 @@ section[data-testid="stSidebar"] * { color: #e0e8f0 !important; }
 .badge-admin    { background:#1e4d8c; color:#a8d4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
 .badge-super    { background:#3b1f6e; color:#d0b4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
 
+/* Tag pill */
+.tag-pill {
+    display:inline-block; background:#1e3a5f; color:#a8c8e8;
+    padding:2px 10px; border-radius:12px; font-size:12px; margin:2px;
+}
+
 /* Call row score colouring (applied via pandas Styler) */
 </style>
 """, unsafe_allow_html=True)
@@ -156,6 +164,23 @@ def append_call(record: dict):
     history = load_history()
     history.append(record)
     save_history(history)
+
+
+def update_call_record(call_id: int, updates: dict):
+    """Patch specific fields on an existing call record by call_id."""
+    history = load_history()
+    for record in history:
+        if record.get("call_id") == call_id:
+            record.update(updates)
+            break
+    save_history(history)
+
+
+def save_audio_file(file_bytes: bytes, call_id: int, suffix: str) -> str:
+    """Save audio bytes to audio_store folder and return the file path."""
+    dest = AUDIO_DIR / f"call_{call_id}.{suffix}"
+    dest.write_bytes(file_bytes)
+    return str(dest)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1016,6 +1041,7 @@ def show_dashboard():
                     cs.get("overview_en",""),
                     flags,
                     areas,
+                    " ".join(r.get("tags", [])),
                 ]).lower()
             display_list = [r for r in filtered if s in _call_text(r)]
         else:
@@ -1036,6 +1062,8 @@ def show_dashboard():
             res_icon = {"Resolved":"✅","Unresolved":"❌","Partially Resolved":"🟡"}.get(res,"➖")
             agent    = record.get("agent_name","—")
             aid      = f" · {record.get('agent_id','')}" if record.get("agent_id") else ""
+            tags     = record.get("tags", [])
+            tags_html = " ".join(f'<span class="tag-pill">🏷️ {t}</span>' for t in tags)
 
             with st.container(border=True):
                 c1,c2,c3,c4,c5,c6,c7,c8,c9 = st.columns([0.35,1.8,1.2,1.0,1.0,0.9,1.0,1.3,1.0])
@@ -1051,6 +1079,8 @@ def show_dashboard():
                     st.session_state["selected_call"] = record
                     st.session_state["page"] = "call_detail"
                     st.rerun()
+                if tags:
+                    st.markdown(tags_html, unsafe_allow_html=True)
 
         # Export
         st.divider()
@@ -1068,6 +1098,7 @@ def show_dashboard():
                 "Overall Score":r.get("overall_score",""),
                 "Call Type":    r.get("call_type",""),
                 "Resolution":   r.get("resolution_status",""),
+                "Tags":         ", ".join(r.get("tags", [])),
                 "Uploaded By":  r.get("uploaded_by",""),
             })
         df  = pd.DataFrame(rows)
@@ -1176,14 +1207,14 @@ def show_dashboard():
 
 
 # ═══════════════════════════════════════════════════════════
-# PAGE: NEW ANALYSIS
+# PAGE: NEW ANALYSIS  — now with batch upload + tags
 # ═══════════════════════════════════════════════════════════
 
 def show_new_analysis():
     st.markdown("""
     <div class="hero-banner">
         <h1>📞 New Call Analysis</h1>
-        <p>Upload a call recording → HYDA AQM analyses it → Full QA scorecard in Arabic &amp; English</p>
+        <p>Upload one or more call recordings → HYDA AQM analyses them → Full QA scorecard in Arabic &amp; English</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1224,23 +1255,38 @@ def show_new_analysis():
             height=220,
             label_visibility="collapsed",
         )
+
+    # ── Tags input ────────────────────────────────────────
+    with st.expander("🏷️ Tags (optional)", expanded=False):
+        tags_input = st.text_input(
+            "Add tags (comma-separated)",
+            placeholder="e.g. escalation, refund, angry customer",
+        )
+    tags_list = [t.strip() for t in tags_input.split(",") if t.strip()] if tags_input else []
+
     st.divider()
 
-    # ── File uploader ─────────────────────────────────────
-    uploaded_file = st.file_uploader(
-        "📁 Upload Call Recording",
+    # ── Batch file uploader ───────────────────────────────
+    uploaded_files = st.file_uploader(
+        "📁 Upload Call Recording(s)",
         type=["mp3", "wav", "aac", "m4a", "ogg", "flac"],
-        help="Supported: MP3, WAV, AAC, M4A, OGG, FLAC",
+        accept_multiple_files=True,
+        help="Select one or multiple files. Supported: MP3, WAV, AAC, M4A, OGG, FLAC",
     )
 
-    if uploaded_file:
-        st.audio(uploaded_file, format=f"audio/{uploaded_file.name.rsplit('.', 1)[-1]}")
-        st.caption(f"📄 **{uploaded_file.name}** · {uploaded_file.size / 1024:.1f} KB")
+    if uploaded_files:
+        st.markdown(f"**{len(uploaded_files)} file(s) selected:**")
+        for uf in uploaded_files:
+            st.caption(f"🎵 {uf.name} · {uf.size / 1024:.1f} KB")
+
+        # Preview first file audio player
+        if len(uploaded_files) == 1:
+            st.audio(uploaded_files[0], format=f"audio/{uploaded_files[0].name.rsplit('.', 1)[-1]}")
 
         _, col_btn, _ = st.columns([1, 2, 1])
         with col_btn:
             process_btn = st.button(
-                "🔍  Analyse Call with HYDA AQM",
+                f"🔍  Analyse {len(uploaded_files)} Call(s) with HYDA AQM",
                 type="primary", use_container_width=True,
             )
 
@@ -1265,93 +1311,104 @@ def show_new_analysis():
                     "Add it in **User Management → AI Provider**."
                 )
                 st.stop()
-            # For openai_mini, whisper uses the same key
             if provider == "openai_mini":
                 whisper_key = primary_key
 
-            suffix     = uploaded_file.name.rsplit(".", 1)[-1].lower()
-            file_bytes = uploaded_file.read()
             system_prompt = build_system_prompt(department, dialect, kpis)
 
-            _error_msg, _error_detail, data = None, None, None
+            # ── Process each uploaded file ────────────────
+            for file_idx, uploaded_file in enumerate(uploaded_files):
+                st.markdown(f"---\n### 📄 `{uploaded_file.name}` ({file_idx + 1}/{len(uploaded_files)})")
 
-            with st.status("⏳ Processing…", expanded=True) as status:
-                if pinfo["audio_native"]:
-                    # ── Gemini path: native audio upload ─────
-                    st.write("📤 Uploading audio for processing…")
-                    try:
-                        gemini_client = genai.Client(api_key=primary_key)
-                        audio_file = upload_audio(gemini_client, file_bytes, suffix)
-                    except Exception as e:
-                        status.update(label="❌ Upload failed", state="error")
-                        _error_msg, _error_detail = f"Upload error: {str(e)}", e
+                suffix     = uploaded_file.name.rsplit(".", 1)[-1].lower()
+                file_bytes = uploaded_file.read()
+                transcript = None
+                data       = None
+                _error_msg, _error_detail = None, None
+
+                with st.status(f"⏳ Processing {uploaded_file.name}…", expanded=True) as status:
+                    if pinfo["audio_native"]:
+                        st.write("📤 Uploading audio for processing…")
+                        try:
+                            gemini_client = genai.Client(api_key=primary_key)
+                            audio_file = upload_audio(gemini_client, file_bytes, suffix)
+                        except Exception as e:
+                            status.update(label="❌ Upload failed", state="error")
+                            _error_msg, _error_detail = f"Upload error: {str(e)}", e
+
+                        if _error_msg is None:
+                            st.write("🧠 Analysing with HYDA AQM")
+                            try:
+                                data = call_analysis_api(gemini_client, audio_file, system_prompt)
+                            except json.JSONDecodeError as e:
+                                status.update(label="❌ Parse error", state="error")
+                                _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
+                            except Exception as e:
+                                status.update(label="❌ Analysis failed", state="error")
+                                _error_msg, _error_detail = str(e), e
+                    else:
+                        st.write("🎙️ Transcribing audio with Whisper…")
+                        try:
+                            transcript = transcribe_with_whisper(file_bytes, suffix, whisper_key)
+                        except Exception as e:
+                            status.update(label="❌ Transcription failed", state="error")
+                            _error_msg, _error_detail = f"Whisper transcription error: {str(e)}", e
+
+                        if _error_msg is None:
+                            st.write("🧠 Analysing with HYDA AQM")
+                            try:
+                                data = call_analysis_text(transcript, system_prompt, provider, cfg)
+                            except json.JSONDecodeError as e:
+                                status.update(label="❌ Parse error", state="error")
+                                _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
+                            except Exception as e:
+                                status.update(label="❌ Analysis failed", state="error")
+                                _error_msg, _error_detail = str(e), e
 
                     if _error_msg is None:
-                        st.write(f"🧠 Analysing with HYDA AQM")
-                        try:
-                            data = call_analysis_api(gemini_client, audio_file, system_prompt)
-                        except json.JSONDecodeError as e:
-                            status.update(label="❌ Parse error", state="error")
-                            _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
-                        except Exception as e:
-                            status.update(label="❌ Analysis failed", state="error")
-                            _error_msg, _error_detail = str(e), e
-                else:
-                    # ── Non-Gemini path: Whisper → text analysis ──
-                    st.write("🎙️ Transcribing audio with Whisper…")
-                    try:
-                        transcript = transcribe_with_whisper(file_bytes, suffix, whisper_key)
-                    except Exception as e:
-                        status.update(label="❌ Transcription failed", state="error")
-                        _error_msg, _error_detail = f"Whisper transcription error: {str(e)}", e
+                        status.update(label="✅ Analysis complete!", state="complete", expanded=False)
 
-                    if _error_msg is None:
-                        st.write(f"🧠 Analysing with HYDA AQM")
-                        try:
-                            data = call_analysis_text(transcript, system_prompt, provider, cfg)
-                        except json.JSONDecodeError as e:
-                            status.update(label="❌ Parse error", state="error")
-                            _error_msg, _error_detail = f"Could not parse response: {str(e)}", e
-                        except Exception as e:
-                            status.update(label="❌ Analysis failed", state="error")
-                            _error_msg, _error_detail = str(e), e
+                if _error_msg:
+                    st.error(f"❌ {_error_msg}")
+                    with st.expander("🔍 Technical details"):
+                        st.exception(_error_detail)
+                    continue  # skip to next file, don't stop the whole batch
 
-                if _error_msg is None:
-                    status.update(label="✅ Analysis complete!", state="complete", expanded=False)
+                # ── Save to history ───────────────────────────
+                history = load_history()
+                call_id = len(history) + 1
+                cs = data["call_summary"]
 
-            if _error_msg:
-                st.error(f"❌ {_error_msg}")
-                with st.expander("🔍 Technical details"):
-                    st.exception(_error_detail)
-                st.stop()
+                # Save audio file to disk
+                audio_path = save_audio_file(file_bytes, call_id, suffix)
 
-            # ── Save to history ───────────────────────────
-            history = load_history()
-            call_id = len(history) + 1
-            cs = data["call_summary"]
-            record = {
-                "call_id":           call_id,
-                "filename":          uploaded_file.name,
-                "department":        department,
-                "dialect":           dialect,
-                "timestamp":         datetime.now().isoformat(),
-                "overall_score":     cs["overall_score"],
-                "duration":          cs.get("duration_estimate","—"),
-                "call_type":         cs.get("call_type","—"),
-                "resolution_status": cs.get("resolution_status","—"),
-                "uploaded_by":       st.session_state["user"]["username"],
-                "agent_name":        agent_name.strip() or "Unknown",
-                "agent_id":          agent_id.strip(),
-                "analysis":          data,
-            }
-            append_call(record)
+                record = {
+                    "call_id":           call_id,
+                    "filename":          uploaded_file.name,
+                    "department":        department,
+                    "dialect":           dialect,
+                    "timestamp":         datetime.now().isoformat(),
+                    "overall_score":     cs["overall_score"],
+                    "duration":          cs.get("duration_estimate","—"),
+                    "call_type":         cs.get("call_type","—"),
+                    "resolution_status": cs.get("resolution_status","—"),
+                    "uploaded_by":       st.session_state["user"]["username"],
+                    "agent_name":        agent_name.strip() or "Unknown",
+                    "agent_id":          agent_id.strip(),
+                    "analysis":          data,
+                    "transcript":        transcript or "",
+                    "audio_path":        audio_path,
+                    "tags":              tags_list,
+                    "supervisor_notes":  "",
+                }
+                append_call(record)
 
-            # ── Render results ────────────────────────────
-            _render_call_report(record)
+                # ── Render results ────────────────────────────
+                _render_call_report(record)
 
     else:
         # landing state
-        st.markdown("### 👆 Upload a call recording above to get started")
+        st.markdown("### 👆 Upload one or more call recordings above to get started")
         cols = st.columns(4)
         features = [
             ("🌍","Multi-Dialect Arabic",
@@ -1411,15 +1468,16 @@ def show_call_detail():
 
 def _render_call_report(record: dict):
     """Shared rendering function for both new analysis and call detail pages."""
-    data    = record.get("analysis", {})
-    cs      = data.get("call_summary", {})
-    sa      = data.get("sentiment_analysis", {})
+    data     = record.get("analysis", {})
+    cs       = data.get("call_summary", {})
+    sa       = data.get("sentiment_analysis", {})
     kpi_list = data.get("kpi_scorecard", [])
     tips     = data.get("coaching_tips", [])
     flags    = data.get("compliance_flags", [])
     score    = cs.get("overall_score", 0)
     dialect  = record.get("dialect", "English")
-    native   = lang_meta(dialect)["native"]   # native script tab label
+    native   = lang_meta(dialect)["native"]
+    call_id  = record.get("call_id")
 
     # ── Metric row ────────────────────────────────────────
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -1431,6 +1489,45 @@ def _render_call_report(record: dict):
               f"{sa.get('agent_sentiment',{}).get('score','—')}/10",
               sa.get('agent_sentiment',{}).get('label',''))
     st.divider()
+
+    # ── Tags display & edit ───────────────────────────────
+    existing_tags = record.get("tags", [])
+    tags_col, edit_col = st.columns([3, 1])
+    with tags_col:
+        if existing_tags:
+            tags_html = " ".join(f'<span class="tag-pill">🏷️ {t}</span>' for t in existing_tags)
+            st.markdown(tags_html, unsafe_allow_html=True)
+        else:
+            st.caption("No tags assigned.")
+    with edit_col:
+        with st.popover("🏷️ Edit Tags"):
+            new_tags_str = st.text_input(
+                "Tags (comma-separated)",
+                value=", ".join(existing_tags),
+                key=f"tags_edit_{call_id}",
+            )
+            if st.button("Save Tags", key=f"save_tags_{call_id}"):
+                new_tags = [t.strip() for t in new_tags_str.split(",") if t.strip()]
+                record["tags"] = new_tags
+                if call_id:
+                    update_call_record(call_id, {"tags": new_tags})
+                st.success("Tags saved.")
+                st.rerun()
+
+    st.divider()
+
+    # ── Audio playback ─────────────────────────────────────
+    audio_path = record.get("audio_path", "")
+    if audio_path and pathlib.Path(audio_path).exists():
+        st.markdown('<div class="section-header">🎧 Call Recording</div>', unsafe_allow_html=True)
+        suffix = pathlib.Path(audio_path).suffix.lstrip(".")
+        mime_map = {
+            "mp3": "audio/mpeg", "wav": "audio/wav", "aac": "audio/aac",
+            "m4a": "audio/mp4",  "ogg": "audio/ogg", "flac": "audio/flac",
+        }
+        with open(audio_path, "rb") as af:
+            st.audio(af.read(), format=mime_map.get(suffix, "audio/mpeg"))
+        st.divider()
 
     # ── Two-column body ───────────────────────────────────
     left, right = st.columns([3, 2], gap="large")
@@ -1445,6 +1542,15 @@ def _render_call_report(record: dict):
             st.markdown(
                 native_div(cs.get("overview_ar","—"), dialect),
                 unsafe_allow_html=True)
+
+        # Transcript
+        transcript = record.get("transcript", "")
+        if transcript:
+            with st.expander("📝 Call Transcript", expanded=False):
+                st.text_area(
+                    "", value=transcript, height=200,
+                    disabled=True, label_visibility="collapsed",
+                )
 
         st.markdown("")
         # KPI Scorecard
@@ -1529,13 +1635,33 @@ def _render_call_report(record: dict):
     else:
         st.info("No coaching tips returned.")
 
+    # ── Supervisor Notes ──────────────────────────────────
+    st.divider()
+    st.markdown('<div class="section-header">📝 Supervisor Notes</div>', unsafe_allow_html=True)
+    current_notes = record.get("supervisor_notes", "")
+    new_notes = st.text_area(
+        "Add notes, observations or manual override reason…",
+        value=current_notes,
+        height=120,
+        key=f"sup_notes_{call_id}",
+        placeholder="e.g. Agent was handling a difficult situation — score adjusted. Follow-up training scheduled for 20 Apr.",
+    )
+    if st.button("💾 Save Notes", key=f"save_notes_{call_id}"):
+        record["supervisor_notes"] = new_notes
+        if call_id:
+            update_call_record(call_id, {"supervisor_notes": new_notes})
+        st.success("Notes saved.")
+
     # ── Export ────────────────────────────────────────────
     st.divider()
     st.markdown("### 📥 Export Report")
     base      = record.get("filename","call").rsplit(".",1)[0]
     timestamp = record.get("timestamp","")[:16].replace("T","_").replace(":","")
-    txt_report  = _generate_text_report(data, record.get("department",""),
-                                        record.get("dialect",""), record.get("filename",""))
+    txt_report  = _generate_text_report(
+        data, record.get("department",""), record.get("dialect",""),
+        record.get("filename",""), record.get("supervisor_notes",""),
+        record.get("tags",[]),
+    )
     json_report = json.dumps(data, ensure_ascii=False, indent=2)
 
     dl1, dl2 = st.columns(2)
@@ -1557,10 +1683,12 @@ def _render_call_report(record: dict):
         )
 
 
-def _generate_text_report(data: dict, department: str, dialect: str, filename: str) -> str:
+def _generate_text_report(data: dict, department: str, dialect: str, filename: str,
+                           supervisor_notes: str = "", tags: list = None) -> str:
     cs    = data.get("call_summary", {})
     sa    = data.get("sentiment_analysis", {})
     score = cs.get("overall_score", 0)
+    tags  = tags or []
     lines = [
         "=" * 60,
         "  HYDA AQM — CALL QUALITY ASSURANCE REPORT",
@@ -1570,6 +1698,7 @@ def _generate_text_report(data: dict, department: str, dialect: str, filename: s
         f"Department: {department}",
         f"Language  : {dialect}",
         f"File      : {filename}",
+        f"Tags      : {', '.join(tags) if tags else '—'}",
         "",
         f"OVERALL SCORE : {score} / 100  ({score_label(score)})",
         "",
@@ -1606,6 +1735,9 @@ def _generate_text_report(data: dict, department: str, dialect: str, filename: s
         for flag in data["compliance_flags"]:
             lines += [f"\n[{flag['severity']}] {flag['flag']}",
                       f"  {flag.get('description_ar','')}"]
+
+    if supervisor_notes:
+        lines += ["", "─" * 60, "SUPERVISOR NOTES", "─" * 60, supervisor_notes]
 
     lines += ["","=" * 60,"RAW JSON DATA","=" * 60,
               json.dumps(data, ensure_ascii=False, indent=2)]
@@ -1920,7 +2052,7 @@ def render_sidebar():
                 st.session_state.pop(key, None)
             st.rerun()
 
-        st.caption("v2.1 · HYDA AQM · Multi-Provider")
+        st.caption("v2.2 · HYDA AQM · Phase 1")
 
 
 # ═══════════════════════════════════════════════════════════
