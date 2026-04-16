@@ -997,14 +997,27 @@ def show_dashboard():
     # ───────────────────────────────────────────────────────
     with tab_calls:
         # Search bar
-        search = st.text_input("🔎 Search by filename or agent name", placeholder="Type to filter…")
+        search = st.text_input("🔎 Search calls", placeholder="filename, agent, department, call type, resolution, summary, coaching area, compliance flag…")
         if search:
             s = search.lower()
-            display_list = [
-                r for r in filtered
-                if s in r.get("filename","").lower()
-                or s in r.get("agent_name","").lower()
-            ]
+            def _call_text(r: dict) -> str:
+                an = r.get("analysis", {})
+                cs = an.get("call_summary", {})
+                flags = " ".join(f.get("flag","") for f in an.get("compliance_flags", []))
+                areas = " ".join(t.get("area","") + " " + t.get("tip_en","") for t in an.get("coaching_tips", []))
+                return " ".join([
+                    r.get("filename",""),
+                    r.get("agent_name",""),
+                    r.get("agent_id",""),
+                    r.get("department",""),
+                    r.get("call_type",""),
+                    r.get("resolution_status",""),
+                    r.get("dialect",""),
+                    cs.get("overview_en",""),
+                    flags,
+                    areas,
+                ]).lower()
+            display_list = [r for r in filtered if s in _call_text(r)]
         else:
             display_list = filtered
 
