@@ -37,71 +37,68 @@ st.set_page_config(
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Layout */
+/* ── Layout ─────────────────────────────────────── */
 .block-container { padding-top: 1.2rem; }
 
-/* Metrics */
+/* ── Metrics ────────────────────────────────────── */
 div[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%);
+    background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
     border-radius: 12px;
     padding: 16px 20px;
-    border: 1px solid rgba(255,255,255,0.1);
+    border: 1px solid #e3eaf5;
+    box-shadow: 0 2px 8px rgba(26,115,232,0.15);
 }
 div[data-testid="metric-container"] label,
 div[data-testid="metric-container"] div { color: white !important; }
 
-/* Section headers */
+/* ── Section headers ────────────────────────────── */
 .section-header {
     font-size: 17px; font-weight: 700;
-    color: #2d6a9f;
-    border-bottom: 2px solid #2d6a9f;
+    color: #1a73e8;
+    border-bottom: 2px solid #1a73e8;
     padding-bottom: 6px; margin-bottom: 14px;
 }
 
-/* Arabic RTL */
+/* ── Arabic RTL ─────────────────────────────────── */
 .arabic-text {
     direction: rtl; text-align: right;
     font-size: 15px; line-height: 1.8;
     font-family: 'Segoe UI','Arial',sans-serif;
 }
 
-/* Sidebar */
+/* ── Sidebar ────────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg,#0d1b2a 0%,#1b2a3b 100%);
+    background: linear-gradient(180deg, #1a73e8 0%, #0d47a1 100%);
 }
-section[data-testid="stSidebar"] * { color: #e0e8f0 !important; }
+section[data-testid="stSidebar"] * { color: #ffffff !important; }
+section[data-testid="stSidebar"] .stButton > button {
+    border: 1px solid rgba(255,255,255,0.3) !important;
+}
 
-/* Hero banner */
+/* ── Hero banner ────────────────────────────────── */
 .hero-banner {
-    background: linear-gradient(135deg,#0d1b2a 0%,#1e3a5f 50%,#2d6a9f 100%);
+    background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
     border-radius: 14px;
     padding: 24px 32px; color: white; margin-bottom: 20px;
+    box-shadow: 0 4px 16px rgba(26,115,232,0.2);
 }
 .hero-banner h1 { color: white; font-size: 26px; margin:0; }
-.hero-banner p  { color: #a8c8e8; margin:4px 0 0; font-size: 13px; }
+.hero-banner p  { color: #cce0ff; margin:4px 0 0; font-size: 13px; }
 
-/* Login card */
-.login-card {
-    max-width: 420px; margin: 60px auto;
-    padding: 36px 40px;
-    background: #0d1b2a;
-    border-radius: 16px;
-    border: 1px solid #2d6a9f;
-}
-.login-card h2 { color: #e0e8f0; text-align: center; margin-bottom: 6px; }
-.login-card p  { color: #a8c8e8; text-align: center; margin-bottom: 24px; font-size: 13px; }
+/* ── Badge ──────────────────────────────────────── */
+.badge-admin { background:#e8f0fe; color:#1a73e8; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-super { background:#f3e8fd; color:#7b1fa2; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
 
-/* Badge */
-.badge-admin    { background:#1e4d8c; color:#a8d4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
-.badge-super    { background:#3b1f6e; color:#d0b4ff; padding:3px 10px; border-radius:12px; font-size:12px; }
-
-/* Tag pill */
+/* ── Tag pill ───────────────────────────────────── */
 .tag-pill {
-    display:inline-block; background:#1e3a5f; color:#a8c8e8;
+    display:inline-block; background:#e8f0fe; color:#1a73e8;
     padding:2px 10px; border-radius:12px; font-size:12px; margin:2px;
+    border: 1px solid #c5d9fb;
 }
 
-/* Call row score colouring (applied via pandas Styler) */
+/* ── Self-eval comparison bar ───────────────────── */
+.eval-bar-wrap { background:#f1f3f4; border-radius:8px; height:12px; margin:4px 0; }
+.eval-bar-fill { height:12px; border-radius:8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,15 +141,19 @@ def save_history(history: list):
 
 def load_config() -> dict:
     defaults = {
-        "api_key":      "",   # Google Gemini key
-        "provider":     "gemini",  # active provider
-        "openai_key":   "",   # OpenAI key (GPT-4o-mini + Whisper transcription)
-        "mistral_key":  "",   # Mistral key
-        "deepseek_key": "",   # DeepSeek key
+        "api_key":           "",
+        "provider":          "gemini",
+        "openai_key":        "",
+        "mistral_key":       "",
+        "deepseek_key":      "",
+        # Phase 2
+        "alert_threshold":   60,      # score below this triggers alert flag
+        "alert_email":       "",      # email to notify (future use)
+        "teams":             {},      # {"Team Name": ["agent1", "agent2"]}
     }
     if CONFIG_FILE.exists():
         stored = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        return {**defaults, **stored}   # merge so new keys are always present
+        return {**defaults, **stored}
     return defaults
 
 
@@ -776,24 +777,34 @@ def show_dashboard():
     # GLOBAL FILTERS (applied to all tabs)
     # ═══════════════════════════════════════════════════════
     with st.expander("🔍 Filters", expanded=True):
-        gf1, gf2, gf3, gf4, gf5 = st.columns(5)
+        gf1, gf2, gf3, gf4, gf5, gf6 = st.columns(6)
 
         all_depts    = sorted(set(r.get("department","") for r in history))
         all_statuses = sorted(set(r.get("resolution_status","") for r in history if r.get("resolution_status")))
         all_agents   = sorted(set(r.get("agent_name","Unknown") for r in history))
+        cfg_dash     = load_config()
+        all_teams    = list(cfg_dash.get("teams", {}).keys())
 
         sel_dept   = gf1.multiselect("Department",  all_depts,    default=all_depts)
         sel_status = gf2.multiselect("Resolution",  all_statuses, default=all_statuses)
         sel_agent  = gf3.multiselect("Agent",       all_agents,   default=all_agents)
         sel_score  = gf4.slider("Min Score", 0, 100, 0)
+        sel_team   = gf5.multiselect("Team", all_teams, default=all_teams,
+                                     help="Filter by team. Teams configured in Team Management.")
 
         # Date range
         timestamps = [r.get("timestamp","")[:10] for r in history if r.get("timestamp")]
         min_date   = pd.to_datetime(min(timestamps)).date() if timestamps else datetime.now().date()
         max_date   = pd.to_datetime(max(timestamps)).date() if timestamps else datetime.now().date()
-        date_range = gf5.date_input("Date Range", value=(min_date, max_date))
+        date_range = gf6.date_input("Date Range", value=(min_date, max_date))
         d_from = date_range[0] if len(date_range) >= 1 else min_date
         d_to   = date_range[1] if len(date_range) == 2 else max_date
+
+    # Build team→agent lookup for filtering
+    team_agents = set()
+    if sel_team and len(sel_team) < len(all_teams):
+        for t in sel_team:
+            team_agents.update(cfg_dash.get("teams",{}).get(t,[]))
 
     # Apply all filters
     filtered = [
@@ -803,6 +814,7 @@ def show_dashboard():
         and r.get("agent_name","Unknown")   in sel_agent
         and r.get("overall_score", 0)       >= sel_score
         and d_from <= pd.to_datetime(r.get("timestamp","1970")[:10]).date() <= d_to
+        and (not team_agents or r.get("agent_name","Unknown") in team_agents)
     ]
 
     if not filtered:
@@ -1059,6 +1071,9 @@ def show_dashboard():
                 f'<span style="background:{score_color}; color:white; padding:3px 10px; '
                 f'border-radius:10px; font-size:13px; font-weight:600;">{score}/100</span>'
             )
+            # Alert badge if score below threshold
+            _threshold  = load_config().get("alert_threshold", 60)
+            alert_badge = ' <span style="background:#e53935;color:white;padding:2px 8px;border-radius:8px;font-size:11px;">⚠️ Alert</span>' if score < _threshold else ""
             res      = record.get("resolution_status","—")
             res_icon = {"Resolved":"✅","Unresolved":"❌","Partially Resolved":"🟡"}.get(res,"➖")
             agent    = record.get("agent_name","—")
@@ -1077,7 +1092,7 @@ def show_dashboard():
                 c4.markdown(f"🏢 {record.get('department','—')}")
                 c5.markdown(f"🕐 {record.get('timestamp','—')[:10]}")
                 c6.markdown(f"⏱ {record.get('duration','—')}")
-                c7.markdown(badge_html, unsafe_allow_html=True)
+                c7.markdown(badge_html + alert_badge, unsafe_allow_html=True)
                 c8.markdown(f"{res_icon} {res}")
                 # 🎧 inline audio toggle
                 has_audio  = bool(record.get("audio_path","")) and pathlib.Path(record.get("audio_path","")).exists()
@@ -1164,12 +1179,20 @@ def show_dashboard():
             best = max(sc)
             worst= min(sc)
             res_rate = d["Resolved"] / d["Calls"] * 100
+            # Self-eval average for this agent
+            self_scores = [
+                r.get("self_evaluation",{}).get("score")
+                for r in filtered if r.get("agent_name") == name
+                and r.get("self_evaluation",{}).get("score") is not None
+            ]
+            self_avg = round(sum(self_scores)/len(self_scores),1) if self_scores else None
             leaderboard.append({
                 "Agent":           name,
                 "Agent ID":        d["Agent ID"],
                 "Department":      d["Department"],
                 "Calls Analysed":  d["Calls"],
                 "Avg Score":       round(avg, 1),
+                "Self-Eval Avg":   self_avg if self_avg is not None else "—",
                 "Best Score":      best,
                 "Worst Score":     worst,
                 "Resolution Rate": f"{res_rate:.0f}%",
@@ -1184,7 +1207,7 @@ def show_dashboard():
 
         lb_df = pd.DataFrame(leaderboard)[
             ["Rank","Agent","Agent ID","Department","Calls Analysed",
-             "Avg Score","Best Score","Worst Score","Resolution Rate"]
+             "Avg Score","Self-Eval Avg","Best Score","Worst Score","Resolution Rate"]
         ]
 
         st.dataframe(
@@ -2000,6 +2023,223 @@ def show_user_management():
 
 
 # ═══════════════════════════════════════════════════════════
+# PAGE: AGENT SELF-EVALUATION
+# ═══════════════════════════════════════════════════════════
+
+def show_self_evaluation():
+    st.markdown("""
+    <div class="hero-banner">
+        <h1>🪞 Agent Self-Evaluation</h1>
+        <p>Agents score their own call — compare against the AI assessment to identify perception gaps</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    history = load_history()
+    if not history:
+        st.info("No calls analysed yet.")
+        return
+
+    user     = st.session_state.get("user", {})
+    username = user.get("username","")
+    role     = user.get("role","admin")
+
+    # Admins/superadmins can pick any agent; agents see their own calls
+    if role == "superadmin":
+        all_agents = sorted(set(r.get("agent_name","Unknown") for r in history))
+        sel_agent  = st.selectbox("Select Agent", ["All"] + all_agents)
+        agent_calls = [r for r in history if sel_agent == "All" or r.get("agent_name") == sel_agent]
+    else:
+        agent_calls = [r for r in history if r.get("uploaded_by") == username
+                       or r.get("agent_name","").lower() == user.get("name","").lower()]
+
+    if not agent_calls:
+        st.info("No calls found for this agent.")
+        return
+
+    # Pick a call to self-evaluate
+    call_options = {
+        f"#{r.get('call_id')} · {r.get('filename','')} · {r.get('timestamp','')[:10]}": r
+        for r in reversed(agent_calls)
+    }
+    selected_label = st.selectbox("Select a call to self-evaluate", list(call_options.keys()))
+    record = call_options[selected_label]
+    call_id = record.get("call_id")
+
+    ai_score      = record.get("overall_score", 0)
+    existing_eval = record.get("self_evaluation", {})
+
+    st.divider()
+    col_ai, col_self = st.columns(2)
+
+    with col_ai:
+        st.markdown('<div class="section-header">🤖 AI Assessment</div>', unsafe_allow_html=True)
+        st.metric("AI Score", f"{ai_score}/100", score_label(ai_score))
+        analysis = record.get("analysis", {})
+        for kpi in analysis.get("kpi_scorecard", []):
+            icon = "✅" if kpi["status"] == "Pass" else "❌" if kpi["status"] == "Fail" else "➖"
+            st.markdown(f"{icon} **{kpi['kpi_name']}** — {kpi['status']}")
+
+    with col_self:
+        st.markdown('<div class="section-header">🪞 Your Self-Assessment</div>', unsafe_allow_html=True)
+        self_score = st.slider(
+            "How would you score this call overall?",
+            0, 100,
+            value=existing_eval.get("score", ai_score),
+            key=f"self_score_{call_id}",
+        )
+        self_reflection = st.text_area(
+            "What went well? What would you do differently?",
+            value=existing_eval.get("reflection",""),
+            height=140,
+            key=f"self_reflect_{call_id}",
+            placeholder="e.g. I handled the objection well but could have shown more empathy at the start…",
+        )
+
+    # Gap analysis
+    st.divider()
+    gap = self_score - ai_score
+    gap_colour = "#1a6b2e" if abs(gap) <= 10 else "#fb8c00" if abs(gap) <= 20 else "#e53935"
+    gap_label  = "Good alignment ✅" if abs(gap) <= 10 else "Moderate gap ⚠️" if abs(gap) <= 20 else "Significant gap 🔴"
+    st.markdown(f"""
+    <div style="background:#f8f9fa; border-radius:12px; padding:16px 24px; border-left:4px solid {gap_colour};">
+        <b>Score Gap:</b> <span style="color:{gap_colour}; font-size:20px; font-weight:700;">
+        {'+' if gap > 0 else ''}{gap} points</span> &nbsp;·&nbsp; {gap_label}<br>
+        <small style="color:#666;">AI scored {ai_score}/100 · You scored {self_score}/100</small>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+    if st.button("💾 Save Self-Evaluation", type="primary", key=f"save_eval_{call_id}"):
+        eval_data = {
+            "score":      self_score,
+            "reflection": self_reflection,
+            "gap":        gap,
+            "submitted_at": datetime.now().isoformat(),
+            "submitted_by": username,
+        }
+        record["self_evaluation"] = eval_data
+        update_call_record(call_id, {"self_evaluation": eval_data})
+        st.success("✅ Self-evaluation saved.")
+        st.rerun()
+
+    # Show past self-evals summary for this agent
+    if role in ("admin","superadmin"):
+        st.divider()
+        st.markdown('<div class="section-header">📊 Self-Evaluation History</div>', unsafe_allow_html=True)
+        eval_rows = []
+        for r in agent_calls:
+            ev = r.get("self_evaluation",{})
+            if ev:
+                eval_rows.append({
+                    "Call":       f"#{r.get('call_id')} {r.get('filename','')}",
+                    "AI Score":   r.get("overall_score",0),
+                    "Self Score": ev.get("score",0),
+                    "Gap":        ev.get("gap",0),
+                    "Date":       ev.get("submitted_at","")[:10],
+                })
+        if eval_rows:
+            st.dataframe(pd.DataFrame(eval_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No self-evaluations submitted yet.")
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGE: TEAM MANAGEMENT  (Super Admin only)
+# ═══════════════════════════════════════════════════════════
+
+def show_team_management():
+    st.markdown("""
+    <div class="hero-banner">
+        <h1>👥 Team Management</h1>
+        <p>Group agents into teams and assign supervisors for filtered reporting</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    cfg   = load_config()
+    teams = cfg.get("teams", {})
+
+    # Pull all known agents from history
+    history    = load_history()
+    all_agents = sorted(set(r.get("agent_name","Unknown") for r in history if r.get("agent_name")))
+
+    # ── Existing teams ────────────────────────────────────
+    st.markdown('<div class="section-header">Current Teams</div>', unsafe_allow_html=True)
+    if teams:
+        for team_name, members in teams.items():
+            with st.container(border=True):
+                tc1, tc2 = st.columns([4, 1])
+                with tc1:
+                    st.markdown(f"**🏢 {team_name}** — {len(members)} member(s)")
+                    st.caption(", ".join(members) if members else "No members yet")
+                with tc2:
+                    if st.button("🗑 Delete", key=f"del_team_{team_name}"):
+                        del teams[team_name]
+                        cfg["teams"] = teams
+                        save_config(cfg)
+                        st.success(f"Team '{team_name}' deleted.")
+                        st.rerun()
+
+                # Edit members inline
+                with st.expander("✏️ Edit Members"):
+                    new_members = st.multiselect(
+                        "Select agents for this team",
+                        options=all_agents,
+                        default=[m for m in members if m in all_agents],
+                        key=f"members_{team_name}",
+                    )
+                    if st.button("💾 Save Members", key=f"save_members_{team_name}"):
+                        teams[team_name] = new_members
+                        cfg["teams"] = teams
+                        save_config(cfg)
+                        st.success(f"Updated members for '{team_name}'.")
+                        st.rerun()
+    else:
+        st.info("No teams created yet.")
+
+    st.divider()
+
+    # ── Create new team ───────────────────────────────────
+    st.markdown('<div class="section-header">➕ Create New Team</div>', unsafe_allow_html=True)
+    with st.form("new_team_form", clear_on_submit=True):
+        new_team_name    = st.text_input("Team Name", placeholder="e.g. Sales Team A")
+        new_team_members = st.multiselect("Select Agents", options=all_agents)
+        if st.form_submit_button("Create Team", type="primary"):
+            if not new_team_name:
+                st.error("Team name cannot be empty.")
+            elif new_team_name in teams:
+                st.error(f"Team '{new_team_name}' already exists.")
+            else:
+                teams[new_team_name] = new_team_members
+                cfg["teams"] = teams
+                save_config(cfg)
+                st.success(f"✅ Team '{new_team_name}' created.")
+                st.rerun()
+
+    st.divider()
+
+    # ── Alert threshold config ────────────────────────────
+    st.markdown('<div class="section-header">🚨 Score Alert Settings</div>', unsafe_allow_html=True)
+    st.caption("Calls scoring below this threshold will be flagged with a ⚠️ alert badge.")
+    with st.form("alert_form", clear_on_submit=False):
+        threshold = st.slider(
+            "Alert Threshold Score",
+            0, 100,
+            value=cfg.get("alert_threshold", 60),
+            help="Any call with an overall score below this value gets an alert badge",
+        )
+        alert_email = st.text_input(
+            "Alert Email (optional — for future email notifications)",
+            value=cfg.get("alert_email",""),
+            placeholder="supervisor@company.com",
+        )
+        if st.form_submit_button("💾 Save Alert Settings", type="primary"):
+            cfg["alert_threshold"] = threshold
+            cfg["alert_email"]     = alert_email
+            save_config(cfg)
+            st.success(f"✅ Alert threshold set to {threshold}/100.")
+
+
+# ═══════════════════════════════════════════════════════════
 # SIDEBAR NAVIGATION
 # ═══════════════════════════════════════════════════════════
 
@@ -2044,6 +2284,17 @@ def render_sidebar():
             st.session_state["page"] = "new_analysis"
             st.rerun()
 
+        if st.button("🪞  Self-Evaluation", use_container_width=True,
+                     type="primary" if current_page=="self_evaluation" else "secondary"):
+            st.session_state["page"] = "self_evaluation"
+            st.rerun()
+
+        if role == "superadmin":
+            if st.button("🏢  Team Management", use_container_width=True,
+                         type="primary" if current_page=="team_management" else "secondary"):
+                st.session_state["page"] = "team_management"
+                st.rerun()
+
         if role == "superadmin":
             if st.button("👥  User Management", use_container_width=True,
                          type="primary" if current_page=="user_management" else "secondary"):
@@ -2073,7 +2324,7 @@ def render_sidebar():
                 st.session_state.pop(key, None)
             st.rerun()
 
-        st.caption("v2.2 · HYDA AQM · Phase 1")
+        st.caption("v3.0 · HYDA AQM · Phase 2")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2102,6 +2353,13 @@ def main():
         show_new_analysis()
     elif page == "call_detail":
         show_call_detail()
+    elif page == "self_evaluation":
+        show_self_evaluation()
+    elif page == "team_management":
+        if user_role == "superadmin":
+            show_team_management()
+        else:
+            st.error("⛔ Access denied. Super Admin only.")
     elif page == "user_management":
         if user_role == "superadmin":
             show_user_management()
