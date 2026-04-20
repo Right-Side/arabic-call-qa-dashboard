@@ -42,11 +42,11 @@ st.markdown("""
 
 /* ── Metrics ────────────────────────────────────── */
 div[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+    background: linear-gradient(135deg, #1E2D6B 0%, #2a3f96 100%);
     border-radius: 12px;
     padding: 16px 20px;
     border: 1px solid #e3eaf5;
-    box-shadow: 0 2px 8px rgba(26,115,232,0.15);
+    box-shadow: 0 2px 8px rgba(30,45,107,0.15);
 }
 div[data-testid="metric-container"] label,
 div[data-testid="metric-container"] div { color: white !important; }
@@ -54,8 +54,8 @@ div[data-testid="metric-container"] div { color: white !important; }
 /* ── Section headers ────────────────────────────── */
 .section-header {
     font-size: 17px; font-weight: 700;
-    color: #1a73e8;
-    border-bottom: 2px solid #1a73e8;
+    color: #1E2D6B;
+    border-bottom: 3px solid #F5A623;
     padding-bottom: 6px; margin-bottom: 14px;
 }
 
@@ -68,32 +68,54 @@ div[data-testid="metric-container"] div { color: white !important; }
 
 /* ── Sidebar ────────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #1a73e8 0%, #0d47a1 100%);
+    background: linear-gradient(180deg, #1E2D6B 0%, #141f4d 100%);
 }
 section[data-testid="stSidebar"] * { color: #ffffff !important; }
 section[data-testid="stSidebar"] .stButton > button {
-    border: 1px solid rgba(255,255,255,0.3) !important;
+    border: 1px solid rgba(245,166,35,0.4) !important;
 }
 
 /* ── Hero banner ────────────────────────────────── */
 .hero-banner {
-    background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+    background: linear-gradient(135deg, #1E2D6B 0%, #2a3f96 70%, #F5A623 100%);
     border-radius: 14px;
     padding: 24px 32px; color: white; margin-bottom: 20px;
-    box-shadow: 0 4px 16px rgba(26,115,232,0.2);
+    box-shadow: 0 4px 16px rgba(30,45,107,0.2);
 }
 .hero-banner h1 { color: white; font-size: 26px; margin:0; }
-.hero-banner p  { color: #cce0ff; margin:4px 0 0; font-size: 13px; }
+.hero-banner p  { color: #fde8b8; margin:4px 0 0; font-size: 13px; }
 
 /* ── Badge ──────────────────────────────────────── */
-.badge-admin { background:#e8f0fe; color:#1a73e8; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
-.badge-super { background:#f3e8fd; color:#7b1fa2; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-admin { background:#e8ecf8; color:#1E2D6B; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-super { background:#fff3d6; color:#c47d00; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; }
+.badge-agent { background:#f0f4ff; color:#1E2D6B; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:600; border:1px solid #c5cef0; }
 
 /* ── Tag pill ───────────────────────────────────── */
 .tag-pill {
-    display:inline-block; background:#e8f0fe; color:#1a73e8;
+    display:inline-block; background:#fff3d6; color:#c47d00;
     padding:2px 10px; border-radius:12px; font-size:12px; margin:2px;
-    border: 1px solid #c5d9fb;
+    border: 1px solid #f5c96a;
+}
+
+/* ── Tabs ────────────────────────────────────────── */
+button[data-baseweb="tab"] {
+    color: #1E2D6B !important;
+    font-weight: 600 !important;
+}
+button[data-baseweb="tab"][aria-selected="true"] {
+    border-bottom: 3px solid #F5A623 !important;
+    color: #F5A623 !important;
+}
+
+/* ── Primary buttons ─────────────────────────────── */
+.stButton > button[kind="primary"] {
+    background: #F5A623 !important;
+    border: none !important;
+    color: white !important;
+    font-weight: 600 !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background: #d4891a !important;
 }
 
 /* ── Self-eval comparison bar ───────────────────── */
@@ -776,14 +798,16 @@ def show_dashboard():
     # ═══════════════════════════════════════════════════════
     # GLOBAL FILTERS (applied to all tabs)
     # ═══════════════════════════════════════════════════════
+    # Pre-load config and team data before filters (needed outside expander scope)
+    cfg_dash  = load_config()
+    all_teams = list(cfg_dash.get("teams", {}).keys())
+
     with st.expander("🔍 Filters", expanded=True):
         gf1, gf2, gf3, gf4, gf5, gf6 = st.columns(6)
 
         all_depts    = sorted(set(r.get("department","") for r in history))
         all_statuses = sorted(set(r.get("resolution_status","") for r in history if r.get("resolution_status")))
         all_agents   = sorted(set(r.get("agent_name","Unknown") for r in history))
-        cfg_dash     = load_config()
-        all_teams    = list(cfg_dash.get("teams", {}).keys())
 
         sel_dept   = gf1.multiselect("Department",  all_depts,    default=all_depts)
         sel_status = gf2.multiselect("Resolution",  all_statuses, default=all_statuses)
@@ -1807,7 +1831,8 @@ def show_user_management():
     for uname, udata in users.items():
         role = udata.get("role","admin")
         badge = (f'<span class="badge-super">Super Admin</span>' if role == "superadmin"
-                 else f'<span class="badge-admin">Admin</span>')
+                 else f'<span class="badge-admin">Admin</span>' if role == "admin"
+                 else f'<span class="badge-agent">Agent</span>')
         c1, c2, c3, c4 = st.columns([2, 2, 2, 1.5])
         c1.markdown(f"**{uname}**")
         c2.markdown(f"👤 {udata.get('name','')}")
@@ -1832,7 +1857,8 @@ def show_user_management():
         new_username = na2.text_input("Username (login ID)")
         nb1, nb2 = st.columns(2)
         new_pw       = nb1.text_input("Password", type="password")
-        new_role     = nb2.selectbox("Role", ["admin", "superadmin"])
+        new_role     = nb2.selectbox("Role", ["agent", "admin", "superadmin"],
+                                     help="Agent: can submit self-evaluations and view own calls only. Admin: can upload and analyse calls. Super Admin: full access.")
         submitted = st.form_submit_button("Create User", type="primary")
 
         if submitted:
@@ -2251,9 +2277,15 @@ def render_sidebar():
         # Logo + brand
         st.markdown("""
         <div style="text-align:center; padding: 10px 0 16px;">
-            <div style="font-size:36px;">📊</div>
-            <div style="font-size:20px; font-weight:700; letter-spacing:1px;">HYDA AQM</div>
-            <div style="font-size:11px; color:#a8c8e8;">Automated Quality Monitoring</div>
+            <div style="background:#ffffff; border-radius:10px; padding:10px 16px; margin:0 8px 8px;">
+                <div style="display:flex; align-items:center; justify-content:center; gap:8px;">
+                    <div style="background:#1E2D6B; border-radius:6px; padding:4px 8px;">
+                        <span style="color:white; font-size:14px;">↗</span>
+                        <span style="color:white; font-size:13px; font-weight:700; letter-spacing:1px;"> RIGHT SIDE</span>
+                    </div>
+                </div>
+            </div>
+            <div style="font-size:13px; color:#fde8b8; font-weight:600; letter-spacing:0.5px;">AQM Platform</div>
         </div>
         """, unsafe_allow_html=True)
         st.divider()
@@ -2261,7 +2293,8 @@ def render_sidebar():
         # User info
         badge_html = (
             '<span class="badge-super">Super Admin</span>' if role == "superadmin"
-            else '<span class="badge-admin">Admin</span>'
+            else '<span class="badge-admin">Admin</span>' if role == "admin"
+            else '<span class="badge-agent">Agent</span>'
         )
         st.markdown(
             f"👤 **{user.get('name', user.get('username',''))}**<br>"
@@ -2279,10 +2312,11 @@ def render_sidebar():
             st.session_state["page"] = "dashboard"
             st.rerun()
 
-        if st.button("➕  New Analysis", use_container_width=True,
-                     type="primary" if current_page=="new_analysis" else "secondary"):
-            st.session_state["page"] = "new_analysis"
-            st.rerun()
+        if role != "agent":
+            if st.button("➕  New Analysis", use_container_width=True,
+                         type="primary" if current_page=="new_analysis" else "secondary"):
+                st.session_state["page"] = "new_analysis"
+                st.rerun()
 
         if st.button("🪞  Self-Evaluation", use_container_width=True,
                      type="primary" if current_page=="self_evaluation" else "secondary"):
