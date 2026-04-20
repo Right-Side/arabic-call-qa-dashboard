@@ -1066,8 +1066,11 @@ def show_dashboard():
             tags     = record.get("tags", [])
             tags_html = " ".join(f'<span class="tag-pill">🏷️ {t}</span>' for t in tags)
 
+            audio_key  = f"audio_open_{record.get('call_id', idx)}"
+            audio_open = st.session_state.get(audio_key, False)
+
             with st.container(border=True):
-                c1,c2,c3,c4,c5,c6,c7,c8,c9 = st.columns([0.35,1.8,1.2,1.0,1.0,0.9,1.0,1.3,1.0])
+                c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 = st.columns([0.35,1.6,1.1,0.9,0.9,0.8,0.9,1.1,0.7,0.9])
                 c1.markdown(f"**#{record.get('call_id','—')}**")
                 c2.markdown(f"🎙️ `{record.get('filename','—')}`")
                 c3.markdown(f"👤 {agent}{aid}")
@@ -1076,12 +1079,29 @@ def show_dashboard():
                 c6.markdown(f"⏱ {record.get('duration','—')}")
                 c7.markdown(badge_html, unsafe_allow_html=True)
                 c8.markdown(f"{res_icon} {res}")
-                if c9.button("📄 Report", key=f"view_c_{idx}", use_container_width=True):
+                # 🎧 inline audio toggle
+                has_audio  = bool(record.get("audio_path","")) and pathlib.Path(record.get("audio_path","")).exists()
+                audio_label = "⏹ Audio" if audio_open else "🎧 Audio"
+                if c9.button(audio_label, key=f"aud_c_{idx}",
+                             use_container_width=True,
+                             disabled=not has_audio,
+                             help="No audio saved for this call" if not has_audio else "Play / hide recording"):
+                    st.session_state[audio_key] = not audio_open
+                    st.rerun()
+                if c10.button("📄 Report", key=f"view_c_{idx}", use_container_width=True):
                     st.session_state["selected_call"] = record
                     st.session_state["page"] = "call_detail"
                     st.rerun()
                 if tags:
                     st.markdown(tags_html, unsafe_allow_html=True)
+                # Inline audio player — expands below the row when toggled
+                if audio_open and has_audio:
+                    audio_path = record.get("audio_path","")
+                    suffix     = pathlib.Path(audio_path).suffix.lstrip(".")
+                    mime_map   = {"mp3":"audio/mpeg","wav":"audio/wav","aac":"audio/aac",
+                                  "m4a":"audio/mp4","ogg":"audio/ogg","flac":"audio/flac"}
+                    with open(audio_path, "rb") as af:
+                        st.audio(af.read(), format=mime_map.get(suffix, "audio/mpeg"))
 
         # Export
         st.divider()
