@@ -98,13 +98,34 @@ section[data-testid="stSidebar"] .stButton > button {
 }
 
 /* ── Tabs ────────────────────────────────────────── */
-button[data-baseweb="tab"] {
-    color: #1E2D6B !important;
-    font-weight: 600 !important;
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    border-bottom: 2px solid #e0e0e0;
 }
-button[data-baseweb="tab"][aria-selected="true"] {
-    border-bottom: 3px solid #F5A623 !important;
+.stTabs [data-baseweb="tab"] {
+    background-color: #f5f6fa;
+    border-radius: 6px 6px 0px 0px;
+    padding: 8px 18px;
+    color: #1E2D6B;
+    font-weight: 600;
+    font-size: 14px;
+    border: 1px solid #e0e0e0;
+    border-bottom: none;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: #ebedf5;
+    color: #1E2D6B;
+}
+.stTabs [aria-selected="true"] {
+    background-color: #ffffff !important;
     color: #F5A623 !important;
+    border-top: 3px solid #F5A623 !important;
+    border-left: 1px solid #e0e0e0 !important;
+    border-right: 1px solid #e0e0e0 !important;
+    border-bottom: none !important;
+}
+.stTabs [data-baseweb="tab-highlight"] {
+    background-color: #F5A623 !important;
 }
 
 /* ── Primary buttons ─────────────────────────────── */
