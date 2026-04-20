@@ -97,26 +97,44 @@ section[data-testid="stSidebar"] .stButton > button {
     border: 1px solid #f5c96a;
 }
 
+/* ── Sidebar secondary buttons — ensure text is visible on dark bg ── */
+section[data-testid="stSidebar"] .stButton > button[kind="secondary"] {
+    background: rgba(255,255,255,0.08) !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(245,166,35,0.35) !important;
+}
+section[data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover {
+    background: rgba(245,166,35,0.2) !important;
+    border-color: #F5A623 !important;
+}
+
 /* ── Tabs ────────────────────────────────────────── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
-    background-color: transparent;
+    background-color: transparent !important;
 }
 .stTabs [data-baseweb="tab"] {
-    background-color: #1E2D6B;
-    border-radius: 6px 6px 0px 0px;
-    padding: 8px 20px;
+    background-color: #1E2D6B !important;
+    border-radius: 6px 6px 0px 0px !important;
+    padding: 8px 20px !important;
     color: #ffffff !important;
-    font-weight: 600;
-    font-size: 14px;
-    border: none;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    border: none !important;
 }
 .stTabs [data-baseweb="tab"]:hover {
-    background-color: #2a3f96;
+    background-color: #2a3f96 !important;
     color: #F5A623 !important;
 }
 .stTabs [aria-selected="true"] {
     background-color: #F5A623 !important;
+    color: #1E2D6B !important;
+}
+.stTabs [data-baseweb="tab"] p {
+    color: inherit !important;
+    font-weight: 600 !important;
+}
+.stTabs [aria-selected="true"] p {
     color: #1E2D6B !important;
 }
 .stTabs [data-baseweb="tab-highlight"] {
@@ -2322,22 +2340,14 @@ def render_sidebar():
     role = user.get("role","admin")
 
     with st.sidebar:
-        # Logo + brand
-        st.markdown("""
-        <div style="text-align:center; padding: 14px 0 10px;">
-            <div style="display:inline-flex; align-items:center; gap:8px;
-                        background:#F5A623; border-radius:8px; padding:8px 16px;">
-                <div style="background:#1E2D6B; border-radius:4px; width:24px; height:24px;
-                            display:flex; align-items:center; justify-content:center;">
-                    <span style="color:white; font-size:14px; font-weight:900;">↗</span>
-                </div>
-                <span style="color:#1E2D6B; font-size:15px; font-weight:800;
-                             letter-spacing:1.5px;">RIGHT SIDE</span>
-            </div>
-            <div style="font-size:11px; color:#fde8b8; font-weight:500;
-                        letter-spacing:0.5px; margin-top:6px;">AQM Platform</div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Logo — embedded as base64, no external file needed
+        _LOGO_B64 = "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"
+        st.markdown(
+            f'<div style="text-align:center; padding:10px 4px 4px;">' +
+            f'<img src="data:image/png;base64,{_LOGO_B64}" ' +
+            f'style="width:100%; max-width:180px; border-radius:8px;"/></div>',
+            unsafe_allow_html=True,
+        )
         st.divider()
 
         # User info
