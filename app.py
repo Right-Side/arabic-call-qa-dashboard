@@ -340,7 +340,8 @@ RESPOND ONLY with a single valid JSON object — no markdown fences, no explanat
             "severity": "Critical | Warning | Info",
             "description_ar": "{native_placeholder} — description of the compliance issue"
         }}
-    ]
+    ],
+    "transcript": "Full verbatim transcript of the call in the original language. Include speaker labels like Agent: and Customer: on each line. If parts are inaudible write [inaudible]."
 }}"""
 
 
@@ -1396,7 +1397,7 @@ def show_new_analysis():
                     "agent_name":        agent_name.strip() or "Unknown",
                     "agent_id":          agent_id.strip(),
                     "analysis":          data,
-                    "transcript":        transcript or "",
+                    "transcript":        transcript or data.get("transcript", ""),
                     "audio_path":        audio_path,
                     "tags":              tags_list,
                     "supervisor_notes":  "",
