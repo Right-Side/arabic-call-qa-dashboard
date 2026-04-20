@@ -100,31 +100,30 @@ section[data-testid="stSidebar"] .stButton > button {
 /* ── Tabs ────────────────────────────────────────── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
-    border-bottom: 2px solid #e0e0e0;
+    background-color: transparent;
 }
 .stTabs [data-baseweb="tab"] {
-    background-color: #f5f6fa;
+    background-color: #1E2D6B;
     border-radius: 6px 6px 0px 0px;
-    padding: 8px 18px;
-    color: #1E2D6B;
+    padding: 8px 20px;
+    color: #ffffff !important;
     font-weight: 600;
     font-size: 14px;
-    border: 1px solid #e0e0e0;
-    border-bottom: none;
+    border: none;
 }
 .stTabs [data-baseweb="tab"]:hover {
-    background-color: #ebedf5;
-    color: #1E2D6B;
+    background-color: #2a3f96;
+    color: #F5A623 !important;
 }
 .stTabs [aria-selected="true"] {
-    background-color: #ffffff !important;
-    color: #F5A623 !important;
-    border-top: 3px solid #F5A623 !important;
-    border-left: 1px solid #e0e0e0 !important;
-    border-right: 1px solid #e0e0e0 !important;
-    border-bottom: none !important;
+    background-color: #F5A623 !important;
+    color: #1E2D6B !important;
 }
 .stTabs [data-baseweb="tab-highlight"] {
+    background-color: transparent !important;
+    height: 0px !important;
+}
+.stTabs [data-baseweb="tab-border"] {
     background-color: #F5A623 !important;
 }
 
@@ -803,6 +802,11 @@ def show_dashboard():
     import plotly.graph_objects as go
     from collections import Counter
 
+    user      = st.session_state.get("user", {})
+    user_role = user.get("role", "admin")
+    username  = user.get("username", "")
+    user_name = user.get("name", "")
+
     st.markdown("""
     <div class="hero-banner">
         <h1>📊 HYDA AQM · Call Quality Dashboard</h1>
@@ -811,6 +815,17 @@ def show_dashboard():
     """, unsafe_allow_html=True)
 
     history = load_history()
+
+    # Agents only see calls where their name matches or they uploaded
+    if user_role == "agent":
+        history = [
+            r for r in history
+            if r.get("uploaded_by","") == username
+            or r.get("agent_name","").lower() == user_name.lower()
+        ]
+        if not history:
+            st.info("No calls have been assigned to you yet.")
+            return
 
     if not history:
         st.info("No calls have been analysed yet. Use **New Analysis** to upload and analyse a call.")
@@ -2205,9 +2220,21 @@ def show_team_management():
     cfg   = load_config()
     teams = cfg.get("teams", {})
 
-    # Pull all known agents from history
-    history    = load_history()
-    all_agents = sorted(set(r.get("agent_name","Unknown") for r in history if r.get("agent_name")))
+    # Pull all known agents from users.json (role=agent) + any agent names in call history
+    users_data  = load_users()
+    agent_users = sorted(
+        udata.get("name", uname)
+        for uname, udata in users_data.items()
+        if udata.get("role") == "agent"
+    )
+    history     = load_history()
+    history_agents = sorted(set(
+        r.get("agent_name","")
+        for r in history
+        if r.get("agent_name","") not in ("", "Unknown")
+    ))
+    # Merge both sources, deduplicated
+    all_agents = sorted(set(agent_users + history_agents))
 
     # ── Existing teams ────────────────────────────────────
     st.markdown('<div class="section-header">Current Teams</div>', unsafe_allow_html=True)
@@ -2297,16 +2324,18 @@ def render_sidebar():
     with st.sidebar:
         # Logo + brand
         st.markdown("""
-        <div style="text-align:center; padding: 10px 0 16px;">
-            <div style="background:#ffffff; border-radius:10px; padding:10px 16px; margin:0 8px 8px;">
-                <div style="display:flex; align-items:center; justify-content:center; gap:8px;">
-                    <div style="background:#1E2D6B; border-radius:6px; padding:4px 8px;">
-                        <span style="color:white; font-size:14px;">↗</span>
-                        <span style="color:white; font-size:13px; font-weight:700; letter-spacing:1px;"> RIGHT SIDE</span>
-                    </div>
+        <div style="text-align:center; padding: 14px 0 10px;">
+            <div style="display:inline-flex; align-items:center; gap:8px;
+                        background:#F5A623; border-radius:8px; padding:8px 16px;">
+                <div style="background:#1E2D6B; border-radius:4px; width:24px; height:24px;
+                            display:flex; align-items:center; justify-content:center;">
+                    <span style="color:white; font-size:14px; font-weight:900;">↗</span>
                 </div>
+                <span style="color:#1E2D6B; font-size:15px; font-weight:800;
+                             letter-spacing:1.5px;">RIGHT SIDE</span>
             </div>
-            <div style="font-size:13px; color:#fde8b8; font-weight:600; letter-spacing:0.5px;">AQM Platform</div>
+            <div style="font-size:11px; color:#fde8b8; font-weight:500;
+                        letter-spacing:0.5px; margin-top:6px;">AQM Platform</div>
         </div>
         """, unsafe_allow_html=True)
         st.divider()
